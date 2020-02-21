@@ -33,8 +33,12 @@ def fit(ts,xs,ell,N=None,R=None,B=None,Lambda=None,maxiter=100,use_tqdm_notebook
     - ts: list of timestamp-vectors: nsamp x [ragged]
     - xs: list of observations:      nsamp x [ragged] x n 
     - ell: scalar
+    - [optional] N,R,B,Lambda -- initialz conditions 
+    - [optional] maxiter -- max number of iters to use in BFGS
+    - [optional] use_tqdm_notebook -- whether to make an update bar with tqdm
+    - [optional] diag_Lambda -- whether to enforce that Lambda is diagonal
 
-    Output: dictionary with the keys
+    Output: dictionary with lots of keys.  See supplementary.pdf for details.  Important keys are:
     - message (result of optimization)
     - params (a dictionary with keys for each parameter of a LEG model)
     - nats (the negative log likelihood divided by the number of observations)
@@ -155,15 +159,15 @@ def funcfast_regular(d,x,N,R,B,Lambda):
     return legops.log_likelihood_regular(d,x,N,R,B,Lambda)
 
 @tf.function(autograph=False)
-def jacfast_irregular(d,x,idxs,N,R,B,Lambda):
+def jacfast_irregular(ts,x,idxs,N,R,B,Lambda):
     with tf.GradientTape() as g:
         for v in [N,R,B,Lambda]:
             g.watch(v)
-        nats = legops.log_likelihood_irregular(d,x,idxs,N,R,B,Lambda)
+        nats = legops.leg_log_likelihood_tensorflow(ts,x,idxs,N,R,B,Lambda)
     return g.gradient(nats,[N,R,B,Lambda])
 @tf.function(autograph=False)
-def funcfast_irregular(d,x,idxs,N,R,B,Lambda):
-    return legops.log_likelihood_irregular(d,x,idxs,N,R,B,Lambda)
+def funcfast_irregular(ts,x,idxs,N,R,B,Lambda):
+    return legops.leg_log_likelihood_tensorflow(ts,x,idxs,N,R,B,Lambda)
 
 def initialize(ell,n,diag_Lambda=False,N=None,R=None,B=None,Lambda=None):
     # initialize

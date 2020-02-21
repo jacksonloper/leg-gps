@@ -1,0 +1,1427 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amssymb}
+\usepackage{mathrsfs}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage[titlenumbered,ruled,linesnumbered]{algorithm2e}
+\usepackage[noend]{algpseudocode}
+\usepackage{graphicx}
+\usepackage{fullpage}
+\usepackage{cancel}
+
+\newtheorem{lemma}{Lemma}
+\newtheorem{theorem}{Theorem}
+\newtheorem{prop}{Proposition}
+\newtheorem*{theorem*}{Theorem}
+\newtheorem*{lemma*}{Lemma}
+\newtheorem{coro}{Corollary}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem*{definition*}{Definition}
+
+
+\newcommand{\SDE}{\mathrm{SDE}}
+\newcommand{\tr}{\mathrm{tr}}
+\newcommand{\LEG}{\mathrm{LEG}}
+\newcommand{\LEGGP}{\mathrm{LEG}}
+\newcommand{\PEG}{\mathrm{PEG}}
+\newcommand{\KPEG}{\mathrm{KPEG}}
+\newcommand{\KLEG}{\mathrm{KLEG}}
+\newcommand{\PEGGP}{\mathrm{PEG}}
+\newcommand{\SM}{\mathrm{SM}}
+\newcommand{\CEL}{\mathrm{CEL}}
+\newcommand{\Cov}{\mathrm{Cov}}
+
+\usepackage{hyperref}
+
+
+\DeclareMathOperator{\CyclicReduction}{CyclicReduction}
+\DeclareMathOperator{\chol}{Cholesky}
+
+
+\title{General linear-time inference for Gaussian Processes on one dimension: Supplementary Material}
+
+\begin{document}
+
+\maketitle
+
+In this document we detail the theory and practice for working with Latent Exponentially Generated (LEG) Gaussian Processes.
+
+\begin{itemize}
+    \item Section 1 is a review about Gaussian Processes of the form $x:\ \mathbb{R} \rightarrow \mathbb{R}^n$ for $n>1$.  This may be helpful for readers which are not familiar with the peculiar matrix-valued spectra of such processes.
+    \item Section 2 is about the theory of the PEG and LEG models.  This section includes proofs for all of the results in the main text.  It shows how we arrive at the expression for the covariance of the LEG model.  It also details the connection between Spectral Mixture kernels and LEG kernels.  This section will be interesting to those seeking to understand why LEG kernels can approximate any Lebesgue-integrable continuous kernel.  We conjecture that the conditions of continuity and Lebesgue-integrability are too strong; we hope that an interested reader may be able to figure out how to loosen these conditions.
+    \item Section 3 is about using Cyclic Reductions to do fast inference with PEG and LEG models.  We show how inference with these models is easy as long as we can work efficiently with block-tridiagonal matrices.  We define the Cyclic Reduction algorithm for block-tridiagonal matrices and show how it enables us to efficiently compute what we need.  (N.B.\ some notation in this section differs slightly from Section 2; in particular, the symbol $\tilde B$ is repurposed)  
+    \item Section 4 is about the leggps python package which implements the algorithms from Section 3.  This section may be helpful for users of this python code.  The leggps package exposes a numpy-based API for learning, finding the posterior, smoothing, interpolating, and forecasting with LEG models (note however that this code uses TensorFlow2 as a backend, so TensorFlow2 must be installed for this code to work).  This package also exposes a TensorFlow2-based API for Cyclic Reduction algorithms, which could be used for unrelated applications involving block-tridiagonal matrices.
+    \item Section 5 includes extensions we would like to implement in the future.  For example, we show that LEG kernels can be used to accelerate inference for processes of the form $z:\ \mathbb{R}^d \rightarrow \mathbb{R}^n$; in future we would like to write code to make this vision a reality.  If any extensions in this section are important for your work, don't hesitate to raise an issue on the Github Repo at \url{https://github.com/jacksonloper/leg-gps} and start a conversation.
+\end{itemize}
+
+%  _  ___   _  _____        ___   _ ____ _____ _   _ _____ _____ 
+% | |/ / \ | |/ _ \ \      / / \ | / ___|_   _| | | |  ___|  ___|
+% | ' /|  \| | | | \ \ /\ / /|  \| \___ \ | | | | | | |_  | |_   
+% | . \| |\  | |_| |\ V  V / | |\  |___) || | | |_| |  _| |  _|  
+% |_|\_\_| \_|\___/  \_/\_/  |_| \_|____/ |_|  \___/|_|   |_|    
+                                                               
+
+\section{Some known facts about GPs}
+
+Here we collect some important definitions and facts -- already known in the literature --  which will be useful in the theory that follows.  
+
+\subsection{Covariance kernels}
+
+\begin{definition*}  Let $z:\ \mathbb{R} \rightarrow \mathbb{R}^\ell$ a Gaussian Process.  The covariance kernel of $z$ is given by
+\[
+K(t,s)\triangleq \Cov(z(t),z(s))
+\]
+Note that $K(s,t)= K(t,s)^\top$ (by the definition of a covariance matrix).  
+
+Sometimes the covariance kernel only depends on the difference between $t$ and $s$.  Say there exists a matrix-valued function $C$ such that $K(t,s)=C(t-s)$, then $K$ is said to be stationary.  In this case, by a slight abuse of terminology, we will call $C$ the covariance kernel of $z$.  Note that $C(-\tau)=C(\tau)^\top$ (again by the definition of a covariance matrix).  
+
+For any $C:\ \mathbb{R}\rightarrow\mathbb{R}^{n\times n}$, we will say that $C$ is ``nonnegative-definite'' if it is the covariance kernel of some Gaussian Process.  
+\end{definition*}
+
+\subsection{The spectrum of a covariance kernel}
+
+\label{subsec:spectrumgeneral}
+
+Here we consider the spectrum of matrix-valued functions.  This spectrum is slightly more involved than the spectra of ordinary functions.  To even define it we need to be slightly careful with the complex values involved.
+
+We use the following notation for complex variables in this supplement.  Unless it is clear from context that $i$ is being used as an index, we will take $i=\sqrt{-1}$.  For any $b$ let $\overline{b}$ denote the \textbf{complex conjugate} of $b$, i.e. if $b=x+iy$ then $\overline{b}=x-iy$.  Let the same definition hold elementwise for vectors and matrices, e.g. if $B_{ij} = x+iy$ then $\overline{B}_ij = x-iy$. For any matrix $B$ let $B^*$ denote the conjugate transpose, i.e. $B^*_{ij} = \overline{B}_{ji}$.  Let $\Re(b)\triangleq (b+\overline{b})/2$ denote the ``real part'' of $b$ and let $\Im(b) = i(\overline{b}-b)/2$ denote the ``imaginary part'' of $b$.
+
+The following Lemma summarizes the results we will need in what follows.  These results are already known in the literature.
+
+\begin{prop}[The spectrum of continuous integrable covariance kernels] \label{prop:generalspectra}
+Assume $C: \mathbb{R} \rightarrow \mathbb{R}^{\ell \times\ell}$ satisfies three properties:
+\begin{itemize}
+    \item $C$ is continuous.
+    \item $C$ is Lebesgue integrable.  That is, for each $\tau$ let $|C(\tau)|=\sup_x \Vert C(\tau)x \Vert / \Vert x \Vert$ denote the operator norm of the matrix $C(\tau)$.  We require that $\int_0^\infty |C(\tau)| d\tau < \infty$.
+    \item $C$ is the covariance kernel of some Gaussian Process $z:\ \mathbb{R}\rightarrow \mathbb{R}^\ell$ (i.e. $C$ is nonnegative-definite).
+\end{itemize}
+Then there is an (almost-surely) unique Hermitian-nonnegative-definite-matrix-valued function $M:\ \mathbb{R}\rightarrow \mathbb{C}^{\ell \times \ell}$ such that
+\[
+C(\tau) = \int e^{-i \tau \omega} M(\omega) d\omega 
+\]
+\end{prop}
+\begin{proof}
+The continuity of $C$ and the fact that it is a covariance kernel allow us to apply Bochner's Theorem to write
+\[
+C(\tau) = \int e^{-i \tau \omega} dF(\omega)
+\]
+for some unique Hermitian-positive-definite-matrix-valued-measure $F$ (cf.\ \cite{brockwell2013time}).  In order to avoid the peculiarities of matrix-valued measures, we can write this in a more familiar way.  Let
+\[
+d\mu(\omega) = \tr\left( dF(\omega)\right)
+\]
+where $\tr$ denotes the trace.  Note that
+\begin{itemize}
+    \item $\mu$ is a finite positive measure: $\mu(\mathbb{R}) = \tr\left(C(0)\right) = \mathbb{E}[\Vert z(0) \Vert^2]< \infty$.  Here we have used that the variance of a Gaussian random variable is finite.  
+    \item $\tr A=0 \Leftrightarrow A=0$ for all Hermitian positive definite matrices $A$, and so we have that $F$ is absolutely continuous with respect to $\mu$.
+\end{itemize}
+It follows that there exists a Radon-Nikodym derivative, $\tilde M:\ \mathbb{R} \rightarrow \mathbb{C}^{\ell \times \ell}$, such that $\tilde M(\omega)$ is a positive-definite Hermitian matrix for each $\omega$ and
+\[
+F(S) = \int_S \tilde M(\omega) d\mu(\omega)
+\]
+Thus the spectrum of a covariance kernel can also be written in terms of this $M$ and a regular positive measure $\mu$:
+\[
+C(\tau) = \int e^{-i \tau \omega} \tilde M(\omega) d\mu(\omega)
+\]
+Now we apply the Lebesgue-integrability conditions.  These imply that the integral of the absolute value of each entry of $C$ is also finite.  The usual properties of Fourier Transforms thus yield that $\mu$ is actually absolutely continuous with respect to the Lebesgue measure.  Thus $\mu(d\omega) = f(\omega)d\omega$ for some positive function $f$.  We can thus write
+\[
+C(\tau) = \int e^{-i \tau \omega} M(\omega) d\omega
+\]
+where $M(\omega) = f(\omega)M(\omega)$.  
+\end{proof}
+
+This leads to the following definition:
+
+\begin{definition*}
+If $M$ is a Hermitian-nonnegative-definite-matrix-valued function such that
+\[
+C(\tau) = \int e^{-i \tau \omega} M(\omega) d\omega 
+\]
+then $M$ is called the spectrum of $C$.  
+\end{definition*}
+
+
+%  ____  _____ ____ __  __  ___  ____  _____ _     
+% |  _ \| ____/ ___|  \/  |/ _ \|  _ \| ____| |    
+% | |_) |  _|| |  _| |\/| | | | | | | |  _| | |    
+% |  __/| |__| |_| | |  | | |_| | |_| | |___| |___ 
+% |_|   |_____\____|_|  |_|\___/|____/|_____|_____|
+                                                 
+
+
+\section{Theory of PEG and LEG models}
+
+We now turn to the definition and theory of the LEG models introduced in the main text.  We also study the  PEG models upon which the LEG model is built.
+
+\subsection{Model definitions}
+
+The PEG and LEG models are defined through the following generative story:
+\begin{enumerate}
+    \item The PEG model.
+    \begin{itemize}
+        \item $N,R$ are $\ell \times \ell$ square matrices.
+        \item $G = N N^\top + R -R^\top$.
+        \item $z:\ \mathbb{R} \rightarrow \mathbb{R}^\ell$ is defined by the fact that $Z(0)\ \sim \mathcal{N}(0,I)$ and
+        \[
+        z(t) = z(0)+\int_0^t \left(-\frac{1}{2} G z(s) dt + N dw(s)\right)
+        \]
+        for some Brownian motion, $w$.  In this case we say that $z \sim \PEG(N,R)$.
+    \end{itemize}
+    \item The LEG model, formed through an observation model on top of the PEG model:
+    \begin{itemize}
+        \item $B$ is an $n\times \ell$ matrix.
+        \item $\Lambda$ is an $n \times n$ matrix.
+        \item For each $t$ independently,
+        \[
+        x(t)|z \sim \mathcal N(B z(t), \Lambda \Lambda ^T)
+        \]
+        where $z \sim \PEG(N,R)$.  In this case we say that $x \sim \LEG(N,R,B,\Lambda)$.  The dimension of the latent PEG process, $\ell$, is called the rank of the LEG process.
+    \end{itemize}
+\end{enumerate}
+
+%  ____  _____ ____  ____ _____     __
+% |  _ \| ____/ ___|/ ___/ _ \ \   / /
+% | |_) |  _|| |  _| |  | | | \ \ / / 
+% |  __/| |__| |_| | |__| |_| |\ V /  
+% |_|   |_____\____|\____\___/  \_/   
+                                    
+
+
+\subsection{First properties of the PEG and LEG models}
+
+The covariance of the PEG model can be written in closed form.
+
+\begin{lemma} \label{lem:props} $z \sim \PEGGP(N,R)$ is stationary, with covariance kernel given by
+\[
+C_{\PEG}(\tau;N,R)  \triangleq 
+\exp\left(-\frac{\tau}{2}\left(N N^\top + R-R^\top\right)\right).
+\]
+for $\tau\geq 0$.
+\end{lemma}
+
+\begin{proof}
+Let $z \sim \PEG(N,R)$, $G=N N^\top + R-R^\top$.  
+
+We start by looking at conditional distributions across time.  Fix any $t>s$.  Per \cite{vatiwutipong2019alternative}, we have that 
+\begin{align*}
+\mathbb{E}[z(t)|z(s)] &= e^{-G(t-s)/2}z(s) \\
+\Cov(z(t)|z(s)) &= e^{-G(t-s)/2} \left( \int_0^{t-s} e^{G \tau/2} NN^\top e^{G^\top \tau /2} d\tau \right) e^{-G^\top(t-s)/2}
+\end{align*}
+To compute this integral, let us consider 
+\[
+M(\tau) = \exp(G\tau/2)\exp(G^\top \tau/2)
+\]
+Using the fact that $G$ commutes with $\exp(G)$, we have that 
+\begin{align*}
+M'(\tau) &=  \frac{1}{2}\exp(G \tau/2)(G+G^\top)\exp(G^\top \tau/2)\\
+      &= \exp(G\tau/2)NN^T\exp(G^\top \tau/2)
+\end{align*}
+This is precisely the object we were integrating before.  The fundamental theorem of calculus therefore gives that 
+\begin{align*}
+\Cov(z(t)|z(s)) &= e^{-G(t-s)/2} (M(t-s)-M(0)) e^{-G^\top(t-s)/2}\\
+&= e^{-G(t-s)/2} (e^{G(t-s)/2}e^{G^\top (t-s)/2}-I) e^{-G^\top(t-s)/2} \\
+&= I - e^{-G(t-s)/2} e^{-G^\top(t-s)/2}
+\end{align*}
+
+Now we will look at unconditional marginal distributions.  In particular, fix any any $t>0$.  Using the law of total expectation and the law of total covariance we find that the marginal distribution of $z(t)$ is given by:
+\begin{align*}
+\mathbb{E}[z(t)] &= 
+  \mathbb{E}[\mathbb{E}[z(t)|z(0)]]
+  =e^{-G(t-s)/2}\mathbb{E}[z(0)]=0 \\
+\Cov(z(t)) &= \mathbb{E}\left[\Cov(z(t)|z(0))\right] 
+            + \Cov(\mathbb{E}[z(t)|z(0)])\\
+           &=  (I - e^{-G(t-s)/2} e^{-G^\top(t-s)/2}) + (e^{-G(t-s)/2} e^{-G^\top(t-s)/2}) = I
+\end{align*}
+Thus $z(t)\sim \mathcal{N}(0,I)$ for every $t\geq 0$.  The same arguments can be applied to show that $z(t) \sim (0,I)$ for $t<0$.
+
+Finally, we turn to unconditional covariances across time.  Since we just showed that the means are all zero it suffices to look at the second-order expectations.  Fix $t>s$.  We calculate that 
+\begin{align*}
+\mathbb{E}[z(t) z(s)^\top] 
+  &= \mathbb{E}[\mathbb{E}[z(t)|z(s)] z(s)^\top]\\ 
+  &= e^{-G(t-s)/2}\mathbb{E}[\mathbb{E}[z(s) z(s)^\top]] \\
+  &= e^{-G(t-s)/2}
+\end{align*}
+Note that this depends only upon $t-s$.  Together with the fact that the marginals are also the same for every $t$, this shows that $z$ is stationary.   The formula above gives the covariance kernel: $C(\tau) = e^{-G\tau/2}$, as desired.
+\end{proof}
+
+A final remark is warranted here about the case $\tau<0$.  In this case, recall that the definition of the covariance matrix gives that $C_{\PEG}(\tau;N,R) =C_{\PEG}(-\tau;N,R)^\top$.  Thus a more complete  definition of the kernel might be given by 
+\[
+C_{\PEG}(\tau;N,R)  \triangleq 
+\begin{cases}
+\exp\left(-\frac{|\tau|}{2}\left(N N^\top + R-R^\top\right)\right) & \tau \geq 0\\
+\exp\left(-\frac{|\tau|}{2}\left(N N^\top + R^\top-R\right)\right) & \tau \leq 0
+\end{cases}
+\]
+
+Now that the covariance of the PEG model is understood, the covariance of the LEG model follows immediately:
+Let $x \sim \LEGGP(N,R,B,\Lambda)$.  The usual rules for the covariances of Gaussian random variables yield that the covariance of $x$ is given by 
+\begin{gather*}
+C_\LEG(\tau;N,R,B,\Lambda) \triangleq
+B \left(C_\PEG(\tau;N,R)\right) B^\top + \delta_{\tau=0} \Lambda \Lambda^\top.
+\end{gather*}
+Here $\delta$ is the indicator function.  
+
+This representation makes it straightforward to see that the sum of two LEG kernels is itself a LEG kernel.  This will be helpful later as we explore connections to Spectral Mixture kernels, which can be understood as a sum of relatively simple kernels.
+
+\begin{prop}[The sum of two LEG kernels is a LEG kernel] \label{prop:additiveleg}
+Let $C(\tau) = C_\LEG(\tau;N_1,R_1,B_1,\Lambda_1) + C_\LEG(\tau;N_2,R_2,B_2,\Lambda_2)$.  Then there exists $N,R,B,\Lambda$ such that $C(\tau)=C_\LEG(\tau;N,R,B,\Lambda)$ and the rank of $C_\LEG(\tau;N,R,B,\Lambda)$ is equal to the the rank of $C_\LEG(\tau;N_1,R_1,B_1,\Lambda_1)$ plus the rank of $C_\LEG(\tau;N_2,R_2,B_2,\Lambda_2)$.
+\end{prop}
+\begin{proof}
+We can construct it directly:
+\begin{itemize}
+    \item $N$ can be constructed as the a direct sum, $N = N_1 \oplus N_2$, i.e.
+    \[
+    N = \left(
+    \begin{array}{cc}
+    N_1 & 0 \\
+    0 & N_2 \\
+    \end{array}
+    \right)
+    \]
+    Note that $\oplus$ is also sometimes used to indicate the Kronecker sum; in this supplement we will always use it to signify the direct sum.
+    \item $R = R_1 \oplus R_2$, i.e.
+    \[
+    R = \left(
+    \begin{array}{cc}
+    R_1 & 0 \\
+    0 & R_2 \\
+    \end{array}
+    \right)
+    \]
+    \item $B = (B_1, B_2)$
+    \item Take $\Lambda$ to be the Cholesky decomposition of $\Lambda_1 \Lambda_1^\top + \Lambda_2 \Lambda_2^\top$
+\end{itemize}
+\end{proof}
+
+Note that in some cases the sum of two LEG kernels can be written as a LEG kernel whose rank is less than the combined rank of the two constituent LEG kernels.  For example, let $C_\LEG(N,R,B,\Lambda)$ be a LEG kernel of rank $\ell$.  The obviously $C_\LEG(N,R,B,\Lambda)+C_\LEG(N,R,B,\Lambda)$ can be written as a LEG kernel of rank $\ell$.  
+
+%  ____  _____ ____ ____  ____  _____ ____ 
+% |  _ \| ____/ ___/ ___||  _ \| ____/ ___|
+% | |_) |  _|| |  _\___ \| |_) |  _|| |    
+% |  __/| |__| |_| |___) |  __/| |__| |___ 
+% |_|   |_____\____|____/|_|   |_____\____|
+                                         
+
+
+\subsection{Spectrum of the PEG and LEG models}
+
+Here we study the spectrum of $C_\PEG(\tau;N,R)$.  It is is straightforward to write down the spectrum of $C$ in terms of the spectrum of the underlying matrix $G=N N^\top + R-R^\top$.  For technical reasons we will here assume that $N N^\top$ is strictly positive definite.  When $N N^\top$ is merely nonnegative definite, with some zero eigenvalues, it is no longer possible to represent the spectrum with a matrix-valued function $M$ and things become a bit more complicated.  Essentially the same ideas go through, but for simplicity we focus on the positive-definite  case here.  
+
+\begin{prop} \label{prop:pegspec}
+Let $N N^\top$ be strictly positive definite.  Then the spectrum of $C_\PEG(N,R)$ is given by 
+\[
+M_\PEG(\omega;N,R)\triangleq \frac{1}{2\pi}  \left(
+    \left(\frac{G}{2}-\omega i I\right)^{-1} + \left(\frac{G^\top}{2}+\omega i I\right)^{-1}\right)
+\]
+where $G=N N^\top + R -R^\top$.  That is, 
+\[
+C_\PEG(\tau,N,R)= \int_{-\infty}^\infty e^{i \omega \tau} M_\PEG(\omega;N,R)d\omega
+\]
+for all $\tau \geq 0$.
+\end{prop}
+
+\begin{proof}
+Since $N N^\top$ is strictly positive definite, the real parts of the eigenvalues of $G$ are also strictly positive, and so $C(\tau)$ decays exponentially as $\tau \rightarrow 0$.  It follows that $C(\tau)$ is Lebesgue integrable.  We can therefore apply the Fourier Inversion formula to argue that the spectrum of $C$ is given by the formula
+\[
+M(\omega) = \frac{1}{2\pi} 
+  \int_{-\infty }^{\infty} e^{i\omega \tau} C(\tau) d\tau 
+\]
+This integral splits into two parts: positive and negative.  Let's look at the positive half first.  
+\begin{align*}
+\int_{0}^{\infty} e^{i\omega \tau} C(\tau) d\tau 
+    &= \int_{0}^{\infty} e^{\tau(i\omega I - G/2)} d\tau \\
+    &= -(i\omega I - G/2)^{-1} = (G/2 - i\omega I)^{-1} 
+\end{align*}
+Here we have used the fact that the derivative of matrix exponentials behaves essentially the same as regular scalar exponentials.  Together with the fundamental theorem of calculus, this allows us to get the integral in closed form.  Now the negative half:
+\begin{align*}
+\int_{-\infty}^{0} e^{i\omega \tau} C(\tau) d\tau 
+    &= \int_{-\infty}^{0} e^{\tau(i\omega I + G^\top/2)} d\tau \\
+    &= (i\omega I + G^\top/2)^{-1} 
+\end{align*}
+Adding the two halves together, we obtain our result.
+\end{proof}
+
+Now that we have understood the spectrum of PEG kernels, we turn to the spectrum of LEG kernels.  If $\Lambda\Lambda^\top \neq0$, the LEG kernel is discontinuous and the spectrum becomes technically involved.  However, when $\Lambda=0$ the spectrum will be continuous and is easy to write down:
+\[
+M_\LEG(\omega;N,R,B,0) \triangleq B M_\PEG(\omega;N,R) B^T
+\]
+It is straightforward to verify that this is indeed the spectrum i.e.
+\[
+\int e^{-i\tau\omega} M_\LEG(\omega;N,R,B,0) d\omega = C_\LEG(\tau;N,R,B,0)
+\]
+
+The expression for $M_\LEG$ suggests that the spectrum of any LEG process decays like an inverse polynomial in $\omega$.  This is a relatively slow rate of decay when compared with Radial Basis Function kernels (whose spectrum decays like $\exp(-\omega^2)$) and Rational Quadratic kernels (whose spectrum decays like $\exp(-|\omega|)$).  This slow rate of decay in the spectrum allows LEG processes to have ``rough'' sample paths.  This, in turn, permits statistically efficient smoothing even when the underlying function does not have infinitely-many derivatives \cite{vaart2011information}.   
+
+%  ____  __  __ _  _______ ____  _   _ _____ _     ____  
+% / ___||  \/  | |/ / ____|  _ \| \ | | ____| |   / ___| 
+% \___ \| |\/| | ' /|  _| | |_) |  \| |  _| | |   \___ \ 
+%  ___) | |  | | . \| |___|  _ <| |\  | |___| |___ ___) |
+% |____/|_|  |_|_|\_\_____|_| \_\_| \_|_____|_____|____/ 
+                                                       
+
+
+
+\subsection{Connections to Celerite and Spectral Mixture kernels}
+
+Here we investigate how LEG kernels are related to two model families already known in the literature: Spectral Mixture kernels and Celerite kernels.  We'll start by defining these two families of kernels:
+
+\subsubsection{Spectral Mixture Kernels}
+
+Spectral Mixture (SM) kernels are a family of kernels for Gaussian Processes of the form $z:\ \mathbb{R}^n \rightarrow \mathbb{R}$, introduced in 2013 by Wilson and Adams \cite{wilson2013gaussian}.  Here we extend their idea to the kinds of processes we are interested in, namely $z:\ \mathbb{R} \rightarrow \mathbb{R}^n$.  For such processes, we define Spectral Mixture (SM) kernels as follows:
+
+\begin{definition}[Spectral Mixture Kernels]
+    Let $p$ denote a probability density on $\mathbb{R}$, let $b_1, b_2 \cdots b_{\ell} \in \mathbb{C}^{n}$, let $\mu \in \mathbb{R}^\ell$, and let $\gamma>0$.  The \textbf{Spectral Mixture kernel with $\ell$ components} parameterized by $p,b,\mu,\gamma$ is defined by
+    \begin{gather*}
+     C_\SM(\tau;p,b,\mu,\gamma) \triangleq \sum_{k=1}^{\ell}\int e^{-i\omega \tau} b_k b_k^* \gamma p(\gamma(\omega - \mu_k)) d \omega.
+    \end{gather*}
+    We will say that a kernel $C_\SM(p,b,\mu,\gamma)$ is \textbf{based on $p$}, since it is designed by combining shifted scaled versions of $p$.  
+\end{definition}
+
+Note that SM kernels are, in general, complex-valued (we refer the reader back to Section \ref{subsec:spectrumgeneral} for the notation we use for such values, e.g. $b^*,\overline{b},\Re(b),\Im(b)$).  For Gaussian Processes we are generally interested in real-valued kernels.  In this regards, the following definition and proposition may be helpful:
+
+\begin{definition}
+Let $p$ a probability distribution on $\mathbb{R}$.  Let $b \in \mathbb{C}^n$, $\mu\in \mathbb{R}$, and $\gamma>0$.  Let $\tilde b_1 = b/2,\tilde b_2=\overline{b}/2,\tilde \mu_1=\mu,\tilde\mu_2=-\mu$.  The two-component SM kernel $C_\SM(p,\tilde b,\tilde \mu,\gamma)$ is said to be the \textbf{Simple Real} Spectral Mixture kernel arising from $p,b,\mu,\gamma$.  
+\end{definition}
+
+\begin{prop}[All real SM kernels are sums of Simple Real SM kernels] \label{prop:allrealsm}
+\hspace{1in}
+
+\begin{enumerate}
+    \item Let $C_\SM(p,b,\mu,\gamma)$ denote an SM kernel with one component.  Let $C_\SM(p,\tilde b,\tilde \mu,\gamma)$ denote the Simple Real SM kernel arising from $p,b,\mu,\gamma$.  Then
+    \[
+    C_\SM(p,\tilde b,\tilde \mu,\gamma) = \Re(C_\SM(p,b,\mu,\gamma))
+    \]
+    \item Let $C_\SM(p,b,\mu,\gamma)$ denote any real-valued SM kernel.  Then it can be written as the sum of Simple Real SM kernels.  
+\end{enumerate}
+\end{prop}
+\begin{proof}
+The first point follows by observing that that $\Re(x)=(x+\bar{x})/2$.  
+
+For the second point.  Since $C_\SM(p,b,\mu,\gamma)$ is real-valued,  it follows that $C_\SM(p,b,\mu,\gamma)=\Re(C_\SM(p,b,\mu,\gamma))$.  Note that $C_\SM(p,b,\mu,\gamma)$ is the sum of SM kernels with one component.  We can apply the first point to each of these one-component kernels.  This yields that $\Re(C_\SM(p,b,\mu,\gamma))$ must be the sum of Simple Real SM kernels.
+\end{proof}
+
+\subsubsection{Celerite kernels}
+
+Celerite is a family of kernels for Gaussian Processes of the form $z:\ \mathbb{R} \rightarrow \mathbb{R}$, introduced in 2017 by Foreman-Mackey, Agol, Ambikasaran, and Angu \cite{foreman2017celerite}.   
+
+\begin{definition}
+Let $a,b,c,d \in \mathbb{R}^\ell$.  The \textbf{Celerite kernel with $\ell$ components} parameterized by $a,b,c,d$ is defined by 
+\[
+C_\CEL(\tau; a,b,c,d) = \sum_k a_k  e^{-c_k\tau} \cos(d_k \tau) + b_k e^{-c_k\tau} \sin(d_k \tau)  
+\]
+Note that $C_\CEL$ is not necessarily positive definite.   A \textbf{Celerite term} is a Celerite kernel with exactly one component, i.e. $\ell=1$.  As shown in the original paper, a Celerite term $C_\CEL(a,b,c,d)$ is positive definite if and only if $|b d|<a c$ and $a,c \geq 0$.
+\end{definition}
+
+We conjecture that Celerite kernels can also be generalized to Gaussian Processes of the form $z:\ \mathbb{R} \rightarrow \mathbb{R}^n$ for $n>1$.  We leave this for future work.
+
+\subsubsection{Connections between the families}
+
+How are SM kernels, Celerite kernels, and LEG kernels related?  
+
+\begin{lemma}[SM kernels, Celerite kernels, LEG kernels] \label{lem:smareleg}
+\hspace{.01in}
+
+\begin{enumerate}
+    \item Every Cauchy-based real-valued SM kernel $C_\SM:\ \mathbb{R} \rightarrow\mathbb{R}$ can be understood as a Celerite kernel.  
+    \item Every positive-definite Celerite term can be understood as a LEG kernel.
+    \item Every Cauchy-based real-valued SM kernel $C_\SM:\ \mathbb{R} \rightarrow\mathbb{R}^{n \times n}$ can be understood as a LEG kernel.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+We take each point separately.
+\begin{enumerate}
+    \item In the original paper \cite{foreman2017celerite} it is shown that each Simple Real SM kernel based on the Cauchy distribution can be understood as a Celerite term.  Proposition \ref{prop:allrealsm} thus yields that all Cauchy-based real-valued SM kernels can be understood as Celerite kernels.  
+    
+    \item Let $C_\CEL(a,b,c,d)$ denote a positive definite Celerite term.  Let 
+    \begin{align*}
+        N_1&=\sqrt{2c-2bd/a}\\
+        R_1&=\sqrt{2c^2 + 4d^2 +2b^2d^2/a^2}\\
+        N_2&=\sqrt{c+bd/a}
+    \end{align*}
+    The original Celerite paper shows that positive-definiteness implies $|bd|<ac$ and $a,c\geq 0$, thus $N_1,R_1,N_2 \in \mathbb{R}$.  Let
+    \[
+    N=\left(\begin{array}{cc}
+    N_{1} & 0\\
+    N_{2} & N_{2}
+    \end{array}\right)\qquad R=\left(\begin{array}{cc}
+    0 & R_{1}\\
+    0 & 0
+    \end{array}\right)\qquad B=\left(\begin{array}{cc}
+    \sqrt{a} & 1\end{array}\right)
+    \]
+    One can then use a symbolic algebra package (we used sympy) to prove that that the spectrum of  $C_\LEG(\tau;N,R,B,0)$ is the same as the spectrum of $C_\CEL(\tau;a,b,c,d)$.  The formula for the spectrum of the Celerite kernel is given in the original paper and the formula for the spectrum of the LEG kernel follows from Proposition \ref{prop:pegspec}.
+    
+    \item Applying Proposition \ref{prop:additiveleg} and \ref{prop:allrealsm}, we see that it suffices to show that every Simple Real SM kernel based on a Cauchy distribution can be understood as a LEG kernel.  Let $C_\SM(p,b,\mu,\gamma)$ denote a Simple Real SM kernel.  Now define 
+    \[
+    J=\left(\begin{array}{cc}
+    0 & 1\\
+    -1 & 0
+    \end{array}\right)
+    \]
+    and let $\tilde B \in \mathbb{R}^{n \times 2}$ be given by $\tilde B = \left( \tilde B_1, \tilde B_2\right)$ such that $ b = \tilde B_1 + i \tilde B_2$.  Take $N=I\sqrt{2/\gamma},R=\mu J$.  One can then use a symbolic algebra package (we used sympy) to prove that that the spectrum of $C_\LEG(N,R,\tilde B,0)$ is the same as the spectrum of $C_\SM(p,b,\mu,\gamma)$.  The formula for the spectrum of the SM kernel is given by definition and the formula for the spectrum of the LEG kernel follows from Proposition \ref{prop:pegspec}.
+\end{enumerate}
+\end{proof}
+
+This Lemma leads to an open problem.  We now know that every positive-definite Celerite term can be understood as a LEG kernel.  By Proposition \ref{prop:additiveleg} it follows that any sum of positive-definite Celerite terms can be understood as a LEG kernel.  However, is it true that every positive-definite Celerite kernel can be understood as a LEG kernel?  In general, there exist positive-definite Celerite kernels which are the sum of Celerite terms which are \emph{not all nonnegative-definite}.  The negativity of some of the kernels is cancelled out by the positivity in others so that the overall result is positive.  Can LEG kernels represent these kinds of Celerite kernels?  We leave this question for future work.
+
+%  _____ _     _______  _____ ____ ___ _     ___ _______   __
+% |  ___| |   | ____\ \/ /_ _| __ )_ _| |   |_ _|_   _\ \ / /
+% | |_  | |   |  _|  \  / | ||  _ \| || |    | |  | |  \ V / 
+% |  _| | |___| |___ /  \ | || |_) | || |___ | |  | |   | |  
+% |_|   |_____|_____/_/\_\___|____/___|_____|___| |_|   |_|  
+                                                           
+
+
+\subsection{Flexibility of Spectral Mixture Kernels}
+
+Just as mixture models can approximate any distribution, it seems reasonable to hope that Spectral Mixture kernels could approximate any stationary kernel.  Wilson and Adams already argued this point for SM kernels for processes $z:\ \mathbb{R}^n\rightarrow \mathbb{R}$ \cite{wilson2013gaussian}.  Here we generalize their flexibility result to processes of the form $z:\ \mathbb{R}\rightarrow \mathbb{R}^n$.
+
+The key point is the following Theorem, a slight generalization of the usual results for kernel density estimation:
+
+\begin{theorem}[Total variation convergence for weighted kernel density estimation] \label{lem:kdereg}
+Let $K,p$ denote bounded densities on $\mathbb{R}^d$.  Let $g:\ \mathbb{R^d} \rightarrow [-M,M]$.  Let $\gamma_\ell = \ell^{1/2d}$.  Let $\mu_1,\mu_2 \cdots \sim p$, independently.  For each $\ell \in 1,2,\cdots$, define  
+\[
+h_{\ell}(\omega) = \frac{1}{\ell} \sum_{k=1}^{\ell}g(\mu_k) \gamma_\ell^d K(\gamma_\ell(\omega - \mu_k)).
+\]
+Then
+\[
+\mathbb{P}\left(\lim_{\ell \rightarrow \infty} \int |h_{\ell}(\omega) - p(\omega)g(\omega)| d\omega  = 0\right) = 1.
+\]
+\end{theorem}
+\begin{proof}
+
+We largely imitate the proof of Devroye and Wagner \cite{devroye1979l1}, which handles the special case that $g(x)= 1$. 
+
+For almost any fixed $\omega$, we have that $\lim_{\ell \rightarrow \infty}|h_\ell(\omega) - p(\omega) g(\omega)|=0$  almost surely.  This follows from two steps:
+
+\begin{enumerate}
+\item \emph{Controlling the bias}.  Let 
+\begin{align*}
+\bar h_{\ell}(\omega)
+&= \mathbb{E}\left[h_{\ell}(\omega)\right]\\
+&= \int g(x) \gamma_\ell^d K(\gamma_\ell(\omega - x)) p(x)dx
+\end{align*}
+
+Now fix any $\delta>0$.  We have that 
+\begin{align*}
+|\bar h_{\ell}(\omega) - p(\omega)g(\omega)| 
+&\leq \int_{\Vert x-\omega \Vert < \delta/\gamma_\ell} |p(x)g(x) - p(\omega)g(\omega)| \gamma^d_\ell K(\gamma_\ell(\omega - x)) dx\\
+&\qquad +  \int_{\Vert x-\omega \Vert \geq \delta/\gamma_\ell} |p(x)g(x) - p(\omega)g(\omega)| \gamma^d_\ell K(\gamma_\ell(\omega - x)) dx\\ 
+\end{align*}
+We look at each term separately:
+\begin{itemize}
+    \item For $x \approx \omega$ we apply the Lebesgue differentiation theorem.  Let $c=\sup K(x)$ and let $\lambda(\delta)$ denote the volume of the ball of radius $\delta$.  Noting that $\gamma^d_\ell = \lambda(\delta)/\lambda(\delta/\gamma_\ell)$, we see that the integral of the error over $\Vert x-\omega \Vert < \delta/\gamma_\ell$ is bounded by
+    \begin{align*}
+         c \lambda(\delta) \frac{1}{\lambda(\delta/\gamma_\ell)} \int_{\Vert x-\omega \Vert < \delta/\gamma_\ell} |p(x)g(x) - p(\omega)g(\omega)| dx
+    \end{align*}
+    For any fixed $\delta$, the Lebesgue differentiation theorem shows that this goes to zero almost everywhere because $\gamma \rightarrow \infty$.
+    
+    \item For $\Vert x-\omega\Vert > \delta/\gamma_\ell$.  Let $c=M\sup_x p(x)$.  Then the integral of the error over this domain is bounded by
+    \[
+    2c\int_{\Vert x-\omega \Vert \geq \delta} K(\omega - x) dx
+    \]
+    Note that we used a change of variables to drop any dependency on $\gamma_\ell$. Since $K$ is a density we can always find $\delta$ so that this is arbitrarily small.
+\end{itemize}
+
+Therefore, for any fixed $\varepsilon$ we can always find a $\delta$ which ensures that the second term is less than $\varepsilon/2$, and then ensure that the first term is less than $\varepsilon/2$ for all sufficiently large $\ell$.  In short, $|\bar h_{\ell}(\omega) - p(\omega)g(\omega))| \rightarrow 0$ for each $\omega$.
+
+\item \emph{Controlling the variation}.  Now we would like to bound $\bar h_{\ell}(\omega) -  h_{\ell}(\omega)$.  To do this we note that it is a sum of independent random variables of the form $g(\mu_k)\gamma_\ell^d K(\gamma_\ell (\omega-\mu_k))/\ell$.  Letting $c=M \sup_x K(x)$ we observe that the absolute value of each random variable is bounded by $\gamma^d c/\ell$.  Hoeffding's inequality then gives that 
+\begin{gather*}
+\mathbb{P}\left(\left|\bar h_{\ell}(\omega) -  h_{\ell}(\omega)\right| > \varepsilon\right) 
+\leq 2\exp\left(-\frac{2\ell t^2}{\gamma^d_\ell c}\right)
+= 2\exp\left(-\sqrt{\ell} \frac{2 t^2}{c}\right)
+\end{gather*}
+The right-hand-side is always summable for any $t>0$.  Indeed, one may readily verify that if $f(x)=-2\exp(-c\sqrt{x})(c\sqrt{x}+1)/c^2$, then $f'(x)=\exp(-c\sqrt{x})$.  For any $c>0$ it follows that $\int_1^\infty \exp\left(-c\sqrt{x}\right) dx=2(c+1)e^{-c}/c^2 < \infty$ and 
+\[
+\sum_\ell \mathbb{P}\left(\left|\bar h_{\ell}(\omega) -  h_{\ell}(\omega)\right| > \varepsilon\right) < \infty 
+\]
+Applying Borel-Cantelli we find that $|\bar h_{y,\ell}(\omega)-h_{y,\ell}(\omega)|$ converges almost surely to zero.  
+\end{enumerate}
+Combining these steps together, we obtain a pointwise result: for almost every $\omega$, the sequence  $h_1(\omega),h_{2}(\omega),\cdots$ converges almost surely to $p(\omega)g(\omega)$.  
+
+To complete the proof we must extend this pointwise result to $\mathscr{L}^1$.  To do so we start by noting that $\int |h_\ell(\omega)|d\omega \rightarrow \int |p(\omega)g(\omega)|d\omega$ almost surely.  Indeed, we have that 
+\[
+\int |h_\ell(\omega)|d\omega = \frac{1}{\ell} \sum_{k=1}^{\ell}|g(\mu_k)|
+\]
+Since $g$ is bounded, the law of large numbers gives us that this converges almost surely to $|p(\omega)g(\omega)|d\omega$.  This allows us to extend our pointwise result to the desired $\mathscr{L}^1$ result via Lemma \ref{lem:glick}, below.
+\end{proof}
+
+\begin{lemma}[Glick's extension of Scheffe's lemma] \label{lem:glick}
+
+Let $(\Omega, \mathcal{F},\pi)$ a probability measure space.  Let $h_1,h_2,h_3\cdots$ denote a sequence of $\mathcal{F}$-measurable functions of the form $h_\ell:\ \mathbb{R}^d \times \Omega \rightarrow \mathbb{R}$.  Let $h_\infty:\ \mathbb{R}^d \rightarrow\mathbb{R}$ another function.  For $\pi$-almost-every $x$ and $\pi$-almost-every $\omega$, assume that $\lim_{\ell \rightarrow \infty} h_\ell (x,\omega),h_2(x,\omega) = h_\infty (x)$.  For $\pi$-almost-every $\omega$, assume that  $\lim_{\ell \rightarrow \infty} \int |h_1(x,\omega)|dx = \int |h_\infty(x,\omega)|dx$, $\pi$-almost-surely.  Then, for $\pi$-almost-every $\omega$, we have that
+\[
+\lim_{\ell \rightarrow \infty} \int |h_\ell (x,\omega)-h_\infty(x)|dx = 0
+\]
+\begin{proof}
+    Apply Scheffe's lemma for each $\omega$.  This observation is generally credited to Glick \cite{glick1974consistency}.
+\end{proof}
+
+\end{lemma} 
+
+Theorem \ref{lem:kdereg} makes it straightforward to show that SM kernels (and, by extension LEG kernels) can be used to approximate any integrable continuous kernel:
+
+\begin{coro}[Flexibility of Spectral Mixture kernels] \label{cor:smflex}
+Fix $p$, a bounded probability density on $\mathbb{R}^n$, $\varepsilon>0$, and any Lebesgue-integrable continuous positive definite stationary kernel $\Sigma:\ \mathbb{R} \rightarrow \mathbb{R}^{n\times n}$.   There exists a real valued kernel $C=C_\SM(p,b,\mu,\gamma)$ such that $\Vert C(\tau)z -\Sigma(\tau)z \Vert < \varepsilon \Vert z \Vert$ for every $\tau\in\mathbb{R},z\in\mathbb{C}^n$.  
+\end{coro}
+\begin{proof}
+Apply Proposition \ref{prop:generalspectra} to argue that
+\[
+\Sigma(\tau) = \int e^{i \tau \omega} M(\omega) d\omega
+\]
+where $M(\tau)$ is Hermitian for each $\tau$.  Apply a unitary eigendecomposition to each $M$, i.e. write
+\[
+\Sigma(\tau) = \sum_{k}^\ell \int e^{i \tau \omega} b_k(\omega) b_k^*(\omega) d\omega
+\]
+Thus, applying Theorem \ref{lem:kdereg}, we can match each entry of the matrix-valued spectrum in an $\mathscr{L}^1$ sense with the corresponding entry of the spectrum of an SM kernel, i.e. we can find $p,b,\mu,\gamma$ to ensure that 
+\[
+\int |(M(\omega))_{j j'} - (M_\SM(\omega;p,b,\mu,\gamma))_{j j'}| d\omega
+\]
+is arbitrarily small for each $j,j'$.  It follows that we can ensure 
+\[
+\sup_z \frac{1}{\Vert z\Vert}\int \Vert M(\omega)z - M_\SM(\omega;p,b,\mu,\gamma)z\Vert d\omega
+\]
+is arbitrarily small.  
+
+So far, we have showed that we can match the spectrum of any Lebesgue-integrable continuous positive definite stationary kernel with the spectrum of an SM kernel.  Now we will use this fact to show that we can match the kernel itself.  We have that
+\begin{align*}
+\sup_{z,\tau} \frac{1}{\Vert z\Vert} \Vert \Sigma(\tau)z - C_\SM(\tau)z \Vert 
+  &\leq \sup_{z,\tau} \frac{1}{\Vert z\Vert}\int \Vert e^{i \tau \omega} (M(\omega)z - M_\SM(\omega;p,b,\mu,\gamma)z) \Vert d\omega\\
+  &= \sup_{z} \frac{1}{\Vert z\Vert}\int \Vert M(\omega)z - M_\SM(\omega;p,b,\mu,\gamma)z \Vert d\omega
+\end{align*}
+But as we just described, we can always ensure that this last expression is as small as we like.   Finally, note that the kernel generated in this fashion may not be perfectly real-valued; however, if the kernel is arbitrarily close to the correct kernel it will be arbitrarily close to real already;  summing the resulting kernel with its complex conjugate yields a kernel which is close to the target and real-valued.
+\end{proof}
+
+\begin{theorem}[Flexibility of LEG kernels] \label{thm:legflex}
+For every $\varepsilon>0$ and every Lebesgue-integrable continuous positive definite stationary kernel $\Sigma: \mathbb{R} \rightarrow \mathbb{R}^{n\times n}$ there exists $C=C_\LEG(N,R,B,\Lambda)$ such that $\Vert C(\tau)z -\Sigma(\tau)z \Vert < \varepsilon \Vert z \Vert$ for every $\tau>0,z\in\mathbb{C}^n$. 
+\end{theorem}
+\begin{proof}
+Combine Corollary \ref{cor:smflex} and Lemma \ref{lem:smareleg}.
+\end{proof}
+
+
+%   ______   ______ _     ___ ____ ____  _____ ____  _   _  ____ 
+%  / ___\ \ / / ___| |   |_ _/ ___|  _ \| ____|  _ \| | | |/ ___|
+% | |    \ V / |   | |    | | |   | |_) |  _| | | | | | | | |    
+% | |___  | || |___| |___ | | |___|  _ <| |___| |_| | |_| | |___ 
+%  \____| |_| \____|_____|___\____|_| \_\_____|____/ \___/ \____|
+                                                               
+
+\section{Algorithms for LEG processes}
+
+\subsection{The importance of block-tridiagonal matrices}
+
+There are a number of tasks related to the LEG model which we would
+like to be able to solve efficiently. It turns out that the computationally
+intensive part of all of these tasks involves working with block-tridiagonal
+matrices. Here we will look at some common tasks and see how this
+plays out.
+
+Throughout what follows, we will assume
+\begin{itemize}
+\item $z\sim\PEGGP(N,R)$
+\item $t_{1}\leq t_{2} \leq \cdots \leq t_{m}$
+\item $\vec x_i \sim \mathcal{N}\left(Bz(t_i),\Lambda\Lambda^{T}\right)$, independently for each $i$
+\item $\vec{z}=(z(t_{1})\cdots z(t_{n}))$
+\end{itemize}
+There is a slight subtlety that occurs when $t_i=t_{i+1}$ for some $i$.  However, when this happens we can effectively reduce the problem to a case where the times are distinct by ``combining'' multiple observations into one.  To keep the exposition clear, we will here assume that $t_1 < t_2 <t_3 \cdots t_m$, though the the leggps package can cope with the more general case.
+
+We may be interested in...
+\begin{itemize}
+\item Computing the covariance of $\vec{z}$ and the inverse of that covariance.
+As shown by Lemma \ref{lem:props}, the covariance of $\vec{z}$ can be expressed in terms of $\ell \times \ell$ blocks as follows:
+\[
+\Sigma=\left(\begin{array}{cccc}
+I & e^{-\frac{1}{2}\left|t_{1}-t_{2}\right|G^{T}} & e^{-\frac{1}{2}\left|t_{1}-t_{3}\right|G^{T}} & \cdots\\
+e^{-\frac{1}{2}\left|t_{1}-t_{2}\right|G} & I & e^{-\frac{1}{2}\left|t_{1}-t_{2}\right|G^{T}}\\
+e^{-\frac{1}{2}\left|t_{1}-t_{3}\right|G} & e^{-\frac{1}{2}\left|t_{1}-t_{2}\right|G^{T}} & I\\
+\vdots &  &  & \ddots
+\end{array}\right)
+\]
+One can readily verify that the the inverse is given by the block-tridiagonal matrix
+\[
+\Sigma^{-1}=\left(\begin{array}{cccc}
+R_{1} & O_{1}^{T} & 0 & \cdots\\
+O_{1} & R_{2} & O_{1}^{T}\\
+0 & O_{2} & R_{3}\\
+\vdots &  &  & \ddots
+\end{array}\right)
+\]
+where 
+\begin{align*}
+d_{i}= & \begin{cases}
+\infty & i=0\\
+t_{i+1}-t_{i} & i\in\left\{ 1\cdots m\right\} \\
+\infty & i=m+1
+\end{cases}\\
+R_{i} & =-(I-e^{-\frac{1}{2}d_{i}G^{T}}e^{-\frac{1}{2}d_{i}G})^{-1}e^{-\frac{1}{2}d_{i}G^{T}}\\
+O_{i} & =I+e^{-\frac{1}{2}d_{i-1}G}(I-e^{-\frac{1}{2}d_{i-1}G^{T}}e^{-\frac{1}{2}d_{i-1}G})^{-1}e^{-\frac{1}{2}d_{i-1}G^{T}}\\
+ & \qquad+e^{-\frac{1}{2}d_{i}G^{T}}(I-e^{-\frac{1}{2}d_{i}G}e^{-\frac{1}{2}d_{i}G^{T}})^{-1}e^{-\frac{1}{2}d_{i}G}
+\end{align*}
+\item Computing the likelihood, $\log p(\vec{x})$. Let 
+\begin{align*}
+\tilde{B} & =\bigoplus_{i=1}^{m}B\\
+\tilde{\Lambda} & =\bigoplus_{i=1}^{m}\left(\Lambda\Lambda^{T}\right)
+\end{align*}
+Here by $\oplus$ we signify the direct sum (not the Kronecker sum).  For example, $\tilde{B}$ is
+a block-diagonal matrix with $m$ diagonal blocks, each of which is identically equal to $B$:
+\[
+\tilde B = \left(
+\begin{array}{cccc}
+B & 0 & 0 & \cdots\\
+0 & B & 0 & \cdots \\
+0 & 0 & B & \cdots \\
+\vdots & \vdots & \vdots & \ddots
+\end{array}
+\right)
+\]
+Note that $\tilde B$ is not necessarily a square matrix, since $B$ is not necessarily a square matrix.  $\tilde \Lambda = \oplus (\Lambda \Lambda^\top)$ is constructed similarly, and it is always a square matrix because $\Lambda \Lambda^\top$ is a square matrix.
+
+In terms of these objects, the covariance of $\vec{x}$ is
+given by 
+\[
+\text{\ensuremath{\Cov}}(\vec{x})=\tilde{B}\Sigma\tilde{B}^{T}+\tilde{\Lambda}
+\]
+And so the likelihood is given by 
+\begin{align*}
+\log p(x) & =-\frac{1}{2}x^{T}\left(\tilde{B}\Sigma\tilde{B}^{T}+\tilde{\Lambda}\right)^{-1}x\\
+ & \qquad-\frac{1}{2}\log\left|2\pi\left(\tilde{B}\Sigma\tilde{B}^{T}+\tilde{\Lambda}\right)\right|
+\end{align*}
+where $\left|\cdot\right|$ here denotes the determinant. Let's take
+one term at a time:
+\begin{itemize}
+\item The Mahalanobis term. The Sherman-Morrison formula gives that 
+\begin{align*}
+x^{T}\left(\tilde{B}\Sigma\tilde{B}^{T}+\tilde{\Lambda}\right)^{-1}x & =x^{T}\left(\tilde{\Lambda}^{-1}-\tilde{\Lambda}^{-1}B^{T}\left(\Sigma^{-1}+B^{T}\tilde{\Lambda}^{-1}B\right)^{-1}B^{T}\tilde{\Lambda}^{-1}\right)x\\
+ & =x^{T}\tilde{\Lambda}^{-1}x-x^{T}\tilde{\Lambda}^{-1}B^{T}\left(\Sigma^{-1}+B^{T}\tilde{\Lambda}^{-1}B\right)^{-1}B^{T}\tilde{\Lambda}^{-1}x
+\end{align*}
+The hard part in computing this is solving the linear system
+\[
+\left(\Sigma^{-1}+B^{T}\tilde{\Lambda}^{-1}B\right)^{-1}\left(B^{T}\tilde{\Lambda}^{-1}x\right)=?
+\]
+Fortunately, the matrix $\Sigma^{-1}+B^{T}\tilde{\Lambda}^{-1}B$
+is block-tridiagonal. So if we can compute solves with block-tridiagonal
+matrices this is not a problem.
+\item The determinant term. The Matrix Determinant Lemma gives that 
+\[
+\left|\tilde{B}\Sigma\tilde{B}^{T}+\tilde{\Lambda}\right|=\frac{\left|\tilde{\Lambda}\right|}{\left|\Sigma^{-1}\right|}\left|\Sigma^{-1}+B^{T}\tilde{\Lambda}^{-1}B\right|
+\]
+The hard part here is computing the determinant of $\left|\Sigma^{-1}\right|$
+and $\left|\Sigma^{-1}+B^{T}\tilde{\Lambda}^{-1}B\right|$. Again,
+these are block-tridiagonal matrices. So if we can do that we have
+no problem.
+\end{itemize}
+\item In-sample posterior estimates. Here we are interested in computing
+$\mathbb{E}\left[\vec{z}|\vec{x}\right],\Cov\left(\vec{z}|\vec{x}\right)$.
+We calculate that 
+\begin{align*}
+\mathbb{E}\left[\vec{z}|\vec{x}\right] & =\left(\Sigma^{-1}+B^{T}\tilde{\Lambda}^{-1}B\right)^{-1}\left(B^{T}\tilde{\Lambda}^{-1}x\right)\\
+\Cov\left(\vec{z}|\vec{x}\right) & =\left(\Sigma^{-1}+B^{T}\tilde{\Lambda}^{-1}B\right)^{-1}
+\end{align*}
+Thus to compute the first object we need to be able to compute solves
+with block-tridiagonal matrices. To compute the second object we need
+to be able to invert block-tridiagonal matrices.  As we shall see, computing every entry in this inverse is intractable, but computing the diagonal and off-diagonal blocks can be done efficiently.  This is sufficient to find the marginal in-sample posterior distributions for each $\vec z_k$.
+
+\item Out-of-sample posterior estimates. Here we are interested in computing
+$\mathbb{E}\left[\vec{z}(t)|\vec{x}\right],\Cov\left(\vec{z}(t)|\vec{x}\right)$
+for arbitrary $t$. There are four different cases here:
+\begin{itemize}
+\item If $t=t_{i}$ for some $i$, then we should use the in-sample posterior
+estimates.
+\item If $t>t_{m}$, then we have a forecasting problem. The Markov structure
+gives that 
+\[
+p(z(t)|\vec x) = \int p(z(t)|\vec z_m) p(\vec z_m |\vec x) d \vec z_m 
+\]
+The distribution of $p(z(t)|z(t_m))$ is found in closed-form by using the covariance formulas for the PEG process.  Thus we can compute the marginal distribution of $z(t)|\vec x$ as long as we know the marginal distribution of $\vec z_m|\vec x$.  This requires knowing the in-sample posterior mean and final diagonal block of the in-sample posterior covariance.
+
+\item If $t_{i}<t<t_{i+1}$ we have an interpolation problem. In this case
+the Markov structure gives that 
+\[
+p(z(t)|\vec x) = \iint p(z(t)|\vec z_i,\vec z_{i+1}) p(\vec z_i,\vec z_{i+1} |\vec x) d\vec z_i d\vec z_{i+1}
+\]
+The distribution of $p(z(t)|\vec z_i,\vec z_{i+1})$ is found in closed-form by using the covariance formulas for the PEG process.  Thus we can compute the marginal distribution of $z(t)|\vec x$ as long as we know the marginal distribution of $\vec z_i,\vec z_{i+1}|\vec x$.   This requires knowing the in-sample posterior mean and the diagonal and off-diagonal blocks of the in-sample posterior covariance.
+\item If $t<t_{1}$, we have a backwards forecasting problem. This is essentially
+the same as the forward forecasting problem, but the PEG process covariance
+formulas are slightly different.
+\end{itemize}
+\item Smoothing/forecasting. Here we are interested in a few related
+things, all of which follow immediately from the out-of-sample posterior
+estimates.
+\begin{itemize}
+\item The posterior predictive means: 
+\[
+\mathbb{E}\left[B\vec{z}(t)|\vec{x}\right]=B\mathbb{E}\left[\vec{z}(t)|\vec{x}\right]
+\]
+\item The posterior predictive uncertainty:
+\[
+B^{T}\text{Cov}\left[z(t)|\vec{x}\right]B^{T}
+\]
+This represents the uncertainty we have about the posterior predictive
+means.
+\item The posterior predictive variances:
+\[
+B^{T}\text{Cov}\left[z(t)|\vec{x}\right]B^{T}+\Lambda\Lambda^{T}
+\]
+This is the conditional variance of a new sample taken at position
+$t$.
+\end{itemize}
+\end{itemize}
+In conclusion, we see that all of the things we need to do can be
+achieved efficiently as long as we can...
+\begin{itemize}
+\item Solve $J^{-1}x$ when $J$ is block-tridiagonal.
+\item Compute the determinant $\left|J\right|$ when $J$ is block-tridiagonal.
+\item Compute the diagonal and off-diagonal blocks of the inverse of $J^{-1}$ when $J$ is block-tridiagonal. 
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Computations with block-tridiagonal matrices using Cyclic Reduction
+(CR)}
+
+Above we saw that most common tasks with LEG processes amount to computations with block-tridiagonal matrices.  Cyclic Reduction (CR) is a classic technique for efficient parallel computations with such matrices \cite{sweet1974generalized}.  These techniques appear to be relatively unknown in the Machine Learning literature, and the original text is a bit dense.  We here describe the algorithms involved in CR.
+
+Let $J$ be the symmetric positive-definite block-tridiagonal matrix,
+defined blockwise by 
+\[
+J=\left(\begin{array}{cccc}
+R_{0} & O_{0}^{T} & 0 & \cdots\\
+O_{0} & R_{1} & O_{1}^{T}\\
+0 & O_{1} & R_{2}\\
+\vdots &  &  & \ddots
+\end{array}\right)
+\]
+We would like to be able to compute efficiently with $J$. To do so,
+we start by decomposing $J$ using what is called a ``Cyclic Reduction.'' This gives
+us a convenient representation of $J$ which is easy to work with.
+Here's how it works.
+
+\begin{definition}[Cyclic Reduction]
+For each $m$, let $P_{m}$
+\[
+P_{m}=\left(\begin{array}{cccccc}
+I & 0 & 0 & 0 & 0\\
+0 & 0 & I & 0 & 0\\
+0 & 0 & 0 & 0 & I\\
+ &  &  &  &  & \ddots
+\end{array}\right)
+\]
+denote the permutation matrix which selects every other block of a
+matrix with $m$ blocks. Let 
+\[
+Q_{m}=\left(\begin{array}{cccccc}
+0 & I & 0 & 0 & 0\\
+0 & 0 & 0 & I & 0\\
+0 & 0 & 0 & 0 & 0\\
+ &  &  &  &  & \ddots
+\end{array}\right)
+\]
+denote the complementary matrix, which takes the other half of the
+blocks.
+
+The \textbf{Cyclic Reduction} of a block-tridiagonal matrix $J$ with $m$
+blocks is defined recursively by 
+\begin{align*}
+L=\CyclicReduction\left(J,m\right) & =\left(\begin{array}{cc}
+P_{m}^{T} & Q_{m}^{T}\end{array}\right)\left(\begin{array}{cc}
+D & 0\\
+U & \tilde L
+\end{array}\right)\\
+D & =\chol\left(P_{m}JP_{m}^{\top}\right)\\
+U & =Q_{m}JP_{m}^{T}D^{-\top}\\
+\tilde{J} & =Q_{m}JQ_{m}^{T}-U^{\top}U\\
+\tilde{L} &= \CyclicReduction\left(\tilde{J},\left\lceil m/2\right\rceil \right)
+\end{align*}
+What are these $P,Q$ matrices doing?  They are simply selecting subsets of blocks of the matrices involved.  For example, it is straightforward to show that $P_m J P_m^\top$ is block-diagonal, with blocks given by $R_0,R_2,R_4,\cdots$.  The matrix $Q_m J Q_m^\top$ is also block-tridiagonal, with blocks given by $R_1,R_3,R_5,\cdots$.  The matrix $Q_m J P_m^\top$ is upper block-didiagonal (i.e. it has diagonal blocks and one set of upper off-diagonal blocks); the diagonal blocks are given by $O_0,O_2,O_4,\cdots$ and the upper off-diagonal blocks are given by $O_1,O_3,O_5,\cdots$.
+
+For this recursive algorithm to make sense, we need that $\tilde J$ is also block-tridiagonal -- but this is always true if $J$ is block-tridiagonal.  The recursion terminates when $J$ has exactly one block.  For this we define the base-case
+\[
+\CyclicReduction\left(J,1\right) = \chol(J)
+\]
+\end{definition}
+
+\begin{prop}
+Let $L=\CyclicReduction\left(J,n\right)$.  Then $LL^\top = J$.
+\end{prop}
+\begin{proof}
+By induction.  For the case $n=1$ the algorithm works because the Cholesky decomposition works.  
+
+Now let us assume the algorithm works for all $\tilde n<n$.  We will show it works for $m$.  Let
+\begin{align*}
+L&=\left(\begin{array}{cc}
+P_{m}^{T} & Q_{m}^{T}\end{array}\right)\left(\begin{array}{cc}
+D & 0\\
+U & \tilde L
+\end{array}\right)\\
+D & =\chol\left(P_{m}JP_{m}^{\top}\right)\\
+U & =Q_{m}JP_{m}^{T}D^{-\top}\\
+\tilde{J} & =Q_{m}JQ_{m}^{T}-U^{\top}U\\
+\tilde{L} &= \CyclicReduction\left(\tilde{J},\left\lceil m/2\right\rceil \right)
+\end{align*}
+By induction $\tilde L \tilde L^\top = \tilde J$.  Thus
+\begin{align*}
+LL^{T}&=\left(\begin{array}{cc}
+P_{m}^{T} & Q_{m}^{T}\end{array}\right)\left(\begin{array}{cc}
+D & 0\\
+U & \tilde{L}
+\end{array}\right)\left(\begin{array}{cc}
+D^{T} & U^{T}\\
+0 & \tilde{L}^{T}
+\end{array}\right)\left(\begin{array}{c}
+P_{m}\\
+Q_{m}
+\end{array}\right)\\&=\left(\begin{array}{cc}
+P_{m}^{T} & Q_{m}^{T}\end{array}\right)\left(\begin{array}{cc}
+DD^{T} & DU^{T}\\
+UD^{T} & UU^{T}+\tilde{L}\tilde{L}^{T}
+\end{array}\right)\left(\begin{array}{c}
+P_{m}\\
+Q_{m}
+\end{array}\right)\\&=\left(\begin{array}{cc}
+P_{m}^{T} & Q_{m}^{T}\end{array}\right)\left(\begin{array}{cc}
+P_{m}JP_{m}^{T} & \cancel{DD^{-1}}P_{m}JQ_{m}^{T}\\
+Q_{m}JP_{m}^{T}\cancel{D^{-T}D^{T}} & \cancel{UU^{T}}+Q_{m}JQ_{m}^{T}-\cancel{UU^{T}}
+\end{array}\right)\left(\begin{array}{c}
+P_{m}\\
+Q_{m}
+\end{array}\right)\\&=J
+\end{align*}
+\end{proof}
+
+This decomposition enables efficient computations with $J$.  Below we describe all of the relevant algorithms (including the CR decomposition algorithm itself) from an algorithms point of view, giving runtimes as we go.  We will see that all operation counts scale linearly in the number of blocks.  We will also discuss parallelization; as we shall see, almost all of the work of a Cyclic Reduction iteration can be done in parallel across the $m$ blocks of $J$.   
+
+\subsubsection{CyclicReduction}
+
+\begin{algorithm}[H]
+\SetKwInOut{Input}{input}
+\SetKwInOut{Output}{output}
+ \Input{rblocks,oblocks,$m$ -- the diagonal and lower off-diagonal blocks of a block-tridiagonal matrix $J$ which has $m$ blocks}
+ \Output{dlist,flist,glist-- a representation of the CR decomposition of $J$}
+ \eIf{$m=1$}{
+    \Return $[\chol(R_0)],[],[]$
+ }
+ {
+    Adopt the notation $R_i=$rblocks[i] and $O_i=$oblocks[i]\;
+    Let
+    \[
+    D \triangleq  \left(\begin{array}{ccc}
+    D_0 & 0 & 0\\
+    0 & D_1 \\
+     &  & \ddots
+    \end{array}\right) 
+    \triangleq \left(\begin{array}{ccc}
+    \chol\left(R_{0}\right) & 0 & 0\\
+    0 & \chol\left(R_{2}\right)\\
+     &  & \ddots
+    \end{array}\right)
+    \]
+    and store the diagonal blocks of $D$ in dblocks\;
+    Let
+    \[
+    U \gets \left(\begin{array}{ccccc}
+    O_{0}D_{0}^{-T} & O_{1}D_{1}^{-T} & 0 & \cdots & 0\\
+    0 & O_{2}D_{1}^{-T} & O_{3}D_{2}^{-T}\\
+    0 & 0 & O_{4}D_{2}^{-T} & \ddots\\
+    \vdots &  &  & \ddots & \\
+    \end{array}\right)
+    \]
+    and store diagonal and upper-off-diagonal blocks of $U$ in (fblocks,gblocks)\;
+    Let
+    \[
+    \tilde J = \left(\begin{array}{ccc}
+    R_1 & 0 & 0\\
+    0 & R_3\\
+     &  & \ddots
+    \end{array}\right) - UU^\top
+    \]
+    and store the diagonal and lower-offdiagonal blocks of $\tilde J$ in newrblocks,newoblocks\;
+    newdlist,newflist,newglist $\gets$ decompose(newrblocks,newoblocks,len(newrblocks))\; 
+    \Return concat([dblocks],newdlist),concat([fblocks],newflist),concat([gblocks],newglist)\;
+ }
+ \caption{decompose}
+\end{algorithm}
+
+Observe that the dlist,flist,glist returned by this algorithm stores everything we would need to reconstruct the $\CyclicReduction(J)$.
+
+How long does this algorithm take?
+\begin{itemize}
+    \item Step 5 requires we compute $m$ Cholesky decompositions
+    \item Step 6 requires $m-1$ triangular solves
+    \item Step 7 has two components.  First we must compute the diagonal and lower-off-diagonal blocks of $UU^\top$ (which requires about $m$ matrix-multiplies and $m$ matrix additions).  Second we must compute $\lfloor m/2 \rfloor$ matrix subtractions.
+    \item Step 8 requires we run the CR algorithm on a problem with $\lfloor m/2 \rfloor$ blocks.
+\end{itemize}
+
+Let $C(m)$ denote overall number of operations for a Cyclic Reduction on an $m$-block matrix.  Since steps 7, 8, and 9 require $O(m)$ operations, we have that there exists some $c$ such that
+\[
+C(m) \leq cm + C(\lfloor n/2 \rfloor) \qquad C(1) \leq c
+\]
+from which we see that $C(m) < 2cm$,\footnote{One way to see this is by induction.  For the base case, we have $C(1)\leq c$.  Then, under the inductive hypothesis, we have that $C(m) < c(m+2m/2) = 2cm$.  In general for all the recursive algorithms that follow, to prove linear-time it will suffice to show that the non-recursive steps require $O(m)$ time.} i.e. the computation scales linearly in $m$.
+
+What about parallelization?  To compute steps 5-7 we need to compute many small Cholesky decompositions, compute many small triangular solves, compute many small matrix multiplies.  These are all common problems, and blazing fast algorithms exist for achieving these goals on multiple CPU cores.  There also exist fast algorithms for achieving these on the GPU.  Unfortunately, TensorFlow2 is quite slow at computing many small Cholesky decompositions on the GPU.  Their code uses the default CUDA libraries; as of January 2020 it is much slower than the corresponding pytorch code.  NVidia is currently in the process of trying to develop a better batch-CUDA platform which will make these algorithms quite fast.  For the moment we recommend running the leggps package (see below) on CPU devices.  
+
+\subsubsection{Solving $Lx=b$}
+
+This algorithm uses the tuple (dlist,flist,glist) representing a Cyclic Reduction $L$ on a matrix with $m$ blocks to compute $L^{-1}b$.
+
+\begin{algorithm}[H]
+\SetKwInOut{Input}{input}
+\SetKwInOut{Output}{output}
+ \Input{dlist,flist,glist,$b$,$m$}
+ \Output{$x=L^{-1}b$}
+ Adopt the notation $D$ is the block-diagonal matrix whose diagonal blocks are given by dlist[0] \;
+ Adopt the notation that $U$ is the upper didiagonal matrix whose diagonal blocks are given by flist[0] and whose upper off-diagonal blocks are given by glist[0]\;
+ \eIf{$m=1$}{
+     \Return $x=D^{-1} b$
+ }
+ {
+    $x_1 \gets D^{-1} P_m b$\;
+    $x_2 \gets$ halfsolve(dlist[1:],flist[1:],glist[1:],$Q_m b - U x_1$,$\lfloor m/2\rfloor$)\;
+    \Return 
+    \[
+        x=\left(\begin{array}{c}
+        x_1\\
+        x_2
+        \end{array}\right)
+    \]
+ }
+ \caption{halfsolve}
+\end{algorithm}
+
+Note that step 6 requires $O(m)$ operations, the base case requires $O(1)$ operations, and step 7 is a recursion on a problem of half-size.  The overall computation thus scales linearly in $m$.  Moreover, step 6 can be understood as $m$ independent triangular solves, all of which can be solved completely independently (this algorithm is thus easy to parallelize across many cores).  
+
+\subsubsection{Solving $L^{\top}x=b$}
+
+This algorithm uses the tuple (dlist,flist,glist) representing a Cyclic Reduction $L$  on a matrix with $m$ blocks to compute $L^{-\top}b$.
+
+\begin{algorithm}[H]
+\SetKwInOut{Input}{input}
+\SetKwInOut{Output}{output}
+ \Input{dlist,flist,glist,$b$,$m$}
+ \Output{$x=L^{-\top}b$}
+ Adopt the notation $D$ is the block-diagonal matrix whose diagonal blocks are given by dlist[-1] (i.e. the last entry in dlist)\;
+ Adopt the notation that $U$ is the upper didiagonal matrix whose diagonal blocks are given by flist[-1] and whose upper off-diagonal blocks are given by glist[-1]\;
+ \eIf{$m=1$}{
+     \Return $x=D^{-T} b$
+ }
+ {
+    $\tilde x_2 \gets$ backhalfsolve(dlist[:-1],flist[:-1],glist[:-1],$b$,$\lfloor m/2\rfloor$)\;
+    $\tilde x_1 \gets D^{-\top} (P_n b- U^\top \tilde x_2)$\;
+    \Return 
+    \[
+    x=\left(\begin{array}{cc}
+    P_{n}^{\top} & Q_{n}^{\top}\end{array}\right)\left(\begin{array}{c}
+    \tilde{x}_{1}\\
+    \tilde{x}_{2}
+    \end{array}\right)
+    \]
+ }
+ \caption{backhalfsolve}
+\end{algorithm}
+
+Just like the halfsolve algorithm, the cost of backhalfsolve scales linearly in $m$ and is easy to parallelize across the $m$ blocks.
+
+\subsubsection{Solving $Jx=b$}
+
+\begin{enumerate}
+\item First solve $Ly=b$ using halfsolve.
+\item Then solve $L^{T}x=y$ using backhalfsolve.
+\end{enumerate}
+Then 
+\[
+Jx=LL^{T}x=Ly=b
+\]
+as desired.
+
+\subsubsection{Computing determinants}
+
+The determinant of a block-Cholesky decomposition is just the square of the product of the determinants of the diagonal blocks.  Thus if (dlist,flist,glist) represents the CR decomposition of $J$ we have that the determinant of $J$ is given by the square of the products of the determinants of all the matrices in dlist.  This can be done in parallel across all of the $m$ blocks, requiring $O(m)$ operations in total.
+
+\subsubsection{Computing the diagonal and off-diagonal blocks of the inverse}
+
+
+\begin{algorithm}[H]
+\SetKwInOut{Input}{input}
+\SetKwInOut{Output}{output}
+ \Input{dlist,flist,glist}
+ \Output{diags,offdiags -- the diagonal and off-diagonal blocks of $J$}
+ Adopt the notation $D$ is the block-diagonal matrix whose diagonal blocks are given by dlist[-1] (i.e. the last entry in dlist)\;
+ Adopt the notation that $U$ is the upper didiagonal matrix whose diagonal blocks are given by flist[-1] and whose upper off-diagonal blocks are given by glist[-1]\;
+ \eIf{$m=1$}{
+     \Return [$D^{-T} D^{-1}$],[]
+ }
+ {
+    subd,suboff $\gets$ invblocks(dlist[:-1],flist[:-1],glist[:-1])\;
+    Adopt the notation that $\tilde \Sigma$ is a matrix whose diagonal blocks are given by subd and whose lower off-diagonal blocks are given by suboff\;
+    Let SUDid store the diagonal blocks of $\tilde\Sigma U D^{-1}$\;
+    Let DitUtSo store the upper-off-diagonal blocks of $D^{-\top}U^{\top}\tilde\Sigma$\;
+    Let DitUtSUDid store the diagonal blocks of $D^{-\top} U^\top \tilde\Sigma U D^{-1}$\;
+    Let 
+    \[
+    \mathrm{diags} \gets \left(\begin{array}{cc}
+    P_{n}^{\top} & Q_{n}^{\top}\end{array}\right)\left(\begin{array}{c}
+    \mathrm{DitUtSUDid}\\
+    \mathrm{subd}
+    \end{array}\right)
+    \]
+    where DitUtSUid and subd are understood as tall columns of matrices.  For example, if each block is $\ell \times \ell$, we understand DitUtSUDid as a $\lceil m/2\rceil \times \ell$ matrix\;
+    Let
+    \[
+    \mathrm{offdiags} \gets
+    \left(\begin{array}{cc}
+    P_{n}^{\top} & Q_{n}^{\top}\end{array}\right)\left(\begin{array}{c}
+    \mathrm{SUDid}\\
+    \mathrm{DitUtSo}
+    \end{array}\right)
+    \]
+    where SUDid and DitUtSo are understood as tall columns of matrices\;
+    \Return diags,offdiags\;
+ }
+ \caption{invblocks}
+\end{algorithm}
+
+
+The cost of this algorithm scales linearly in $m$ because steps 7-11 require $O(m)$ operations.  To see how this can be so, recall that $U$ is block didiagonal and $D$ is block diagonal.  Thus, for example, step 8 involves $\Sigma U D^{-1}$.   Computing this entire matrix would be quite expensive.  However, $U$ is block didiagonal and we only need the diagonal blocks of the result, so we can get what we need in linear time and we only need to know the diagonal and off-diagonal blocks of $\Sigma$.  As in the other algorithms, note that all of the steps can be done in parallel across the $m$ blocks.
+
+Why does this algorithm work?  As usual, let
+\begin{align*}
+L=\CyclicReduction\left(J,m\right) & =\left(\begin{array}{cc}
+P_{m}^{T} & Q_{m}^{T}\end{array}\right)\left(\begin{array}{cc}
+D & 0\\
+U & \tilde L
+\end{array}\right)\\
+D & =\chol\left(P_{m}JP_{m}^{\top}\right)\\
+U & =Q_{m}JP_{m}^{\top}D^{-\top}\\
+\tilde{J} & =Q_{m}JQ_{m}^{\top}-U^{\top}U\\
+\tilde{L} &= \CyclicReduction\left(\tilde{J},\left\lceil m/2\right\rceil \right)
+\end{align*}
+Now let $\tilde \Sigma = \tilde J^{-1}$.  It follows that 
+\[
+J^{-1} = \left(\begin{array}{c}
+P_{n}\\
+Q_{n}
+\end{array}\right)\left(\begin{array}{cc}
+D^{-T}D^{-1}+D^{-\top}U^{\top}\tilde{\Sigma}UD^{-1} & -D^{-\top}U^{\top}\tilde{\Sigma}\\
+-\tilde{\Sigma}UD^{-1} & \tilde{\Sigma}
+\end{array}\right)\left(\begin{array}{cc}
+P_{n}^{T} & Q_{n}^{\top}\end{array}\right)
+\]
+So to compute the diagonal and off-diagonal blocks of $J^{-1}$ we just need to collect all the relevant blocks from the the inner matrix on the RHS of the equation above.  Luckily, all of the relevant blocks can be calculated using only the diagonal and off-diagonal blocks of $\tilde \Sigma$.  This is what the invblocks algorithm does.
+
+\subsection{Learning}
+
+We are now positioned to design an algorithm to learn a LEG model from data via maximum likelihood.  We need three ingredients.  We describe them here:
+
+\begin{itemize}
+    \item The ability to efficiently compute the likelihood and the gradient of the likelihood.  This is facilitated by the algorithms above.
+    \item An optimization algorithm that uses those gradients.  We use BFGS, as implemented by scipy.optimize.  
+    \item Initial conditions.  In the leggps package (described below) the user can provide their own initial conditions.  If none are provided, we use the following simple initialization which seemed to work in practice for all the problems we looked at:
+    \begin{itemize}
+        \item $N=I$.  This assumes that the smoothness lengthscale of the time series is roughly on the order of one unit.  If this is not the case, one can either scale the input times or provide a correspondingly different $N$.  In general, the smoothness timescale is inversely proportional to $N N^\top$.
+        \item Each entry of $R$ is sampled from $\mathcal{N}(0,\sqrt{.2})$.  This assumes that the oscillations of the timeseries are roughly at a frequency of $.2$ oscillations per unit of time (i.e. one oscillation for every five units of time).
+        \item $\Lambda = .1 I$.  This assumes that the independent noise has a standard deviation of roughly $.1$.  
+    \end{itemize}
+    Even when the true smoothness lengthscale was hundreds of times different from unity, we found that BFGS was able to detect this and adjust quickly to a better regime.
+\end{itemize}
+
+This optimization problem does not appear to be convex.  There were cases where we found that multiple restarts (each initialized with the same random initialization routine, described above) resulted in superior fits.  The user may wish to try this if the result is unsatisfactory the first time.  
+
+When the observations are regularly spaced, a learned AR model could also be used to initialize the parameters of the LEG model, though we have not worked out exactly how this would be done.  There is also a literature on using Hankel matrices to guess the dynamics of state-space models like the LEG model.  In the future we hope to explore new methods for initializing.  If you have ideas, don't hesitate to raise an issue on the GitHub repo.
+
+%  ______   _______ _   _  ___  _   _ ____   _    ____ _  __    _    ____ _____ 
+% |  _ \ \ / /_   _| | | |/ _ \| \ | |  _ \ / \  / ___| |/ /   / \  / ___| ____|
+% | |_) \ V /  | | | |_| | | | |  \| | |_) / _ \| |   | ' /   / _ \| |  _|  _|  
+% |  __/ | |   | | |  _  | |_| | |\  |  __/ ___ \ |___| . \  / ___ \ |_| | |___ 
+% |_|    |_|   |_| |_| |_|\___/|_| \_|_| /_/   \_\____|_|\_\/_/   \_\____|_____|
+                                                                              
+
+\section{The leggps python package}
+
+The leggps python package can be found at \url{https://github.com/jacksonloper/leg-gps}.  It provides functionality for working with LEG models and also exposes some of the cyclic reduction algorithms.  
+
+\subsection{Working with LEG processes}
+
+leggps follows a few conventions:
+
+\begin{itemize}
+    \item All vectors and matrices are represented as numpy objects.
+    \item A LEG model is represented by a matrix-valued dictionary with keys for N, R, B, and Lambda.
+    \item $m$ observations from a LEG model comprise a sequence of times and a sequence of values.  
+    \begin{itemize}
+        \item The times $t_1 \leq t_2 \leq t_3 \cdots t_m$ are represented as a vector of length $m$.  We assume these times are sorted.  
+        \item The corresponding observations $\vec x$ are represented as a matrix.  If the LEG process has the form $z:\ \mathbb{R}\rightarrow \mathbb{R}^n$, this matrix will have dimensions $m \times n$.  To avoid mistakes, even if the LEG process has the form $z:\ \mathbb{R}\rightarrow \mathbb{R}^n$, we will expect a matrix with dimensions $m \times 1$.  
+    \end{itemize}
+    We assume that the observations of $x$ arise from a LEG model, i.e. $z \sim \PEG(N,R)$ and
+    \[
+    \vec x_i \sim \mathcal{N}(Bz(t_i),\Lambda \Lambda^\top)
+    \]
+    Note that if $t_i=t_i+1$ we assume that $\vec x_i,\vec x_{i+1}$ are sampled independently.
+    \item Sometimes we will wish to represent several independent samples from a LEG model.  For example, perhaps each independent sample represents a neural recording on a different day.  We will represent this using a list of time-vectors and a corresponding list of observation matrices.  That is, we will have that
+    \begin{itemize}
+        \item ts[i][j] indicates the time of the $j$th observation in the $i$th independent sample
+        \item xs[i][j,k] indicates the $k$th dimension of the $j$th observation in the $i$th independent sample
+    \end{itemize}
+\end{itemize}
+
+leggps provide the following functions:
+
+\begin{description}
+    \item[leggps.C\_LEG] Calculates the covariance of a LEG process for various values of $\tau$.
+        Inputs:
+        \begin{description}
+            \item[taus] A vector of $m$ times, $\tau_1 \leq \tau_2 \leq \tau_3 \cdots$
+            \item[N,R,B,Lambda] Model parameters
+        \end{description} 
+
+        Outputs an $m \times n \times n$ tensor.  The $i$th element of this indicates indicates $C_\LEG(\tau_i;N,R,B,\Lambda)$.
+
+
+    \item[leggps.leg\_log\_likelihood] Calculates the log likelihood of an observation under a LEG model.
+
+        Inputs:
+        \begin{description}
+            \item[ts] A vector of $m$ times, $t_1 \leq t_2 \leq t_3 \cdots t_m$
+            \item[xs] A matrix of observations at those times, i.e. $\vec x = x(t_1),x(t_2),\cdots$.  
+            \item[N,R,B,Lambda] Model parameters
+        \end{description} 
+
+        Outputs the log likelihood.
+        
+    \item[leggps.leg\_log\_likelihood\_tensorflow] Essentially the  same as the function above, but inputs and outputs are assumed to be TensorFlow2 objects.  This may be helpful if you would like to efficiently calculate gradients, write your own optimization routines, or use the LEG family as a building block in a larger model (e.g. one can put a prior on the parameters and use the gradient together with Hamiltonian Monte-Carlo to sample from the posterior on the parameters $N,R,B,\Lambda$).  To make this fast, we recommend enclosing your code with a tf.function(autograph=False) decorator, compiling the operations to a graph which can be run quite efficiently.  
+    
+    Inputs:
+    \begin{description}
+        \item[ts] A vector of $\tilde m$ times, $t_0 < t_1 < t_2 \cdots t_{\tilde m-1}$.  Note that these times \emph{must} be distinct (compare with the leg\_log\_likelihood which allows non-distinct values).  
+        \item[xs] A matrix of $m$ observations, each of which was taken at one of those times.  In particular, $\vec x = x(t_{\mathtt{idxs}_0}),x(t_{\mathtt{idxs}_1}),\cdots$, where...
+        \item[idxs] is a vector of length $m$ indicating which observations came from which times.  Each entry of idxs should be an integer in the set $\{0,1,\cdots \tilde m-1\}$.
+        \item[N,R,B,Lambda] Model parameters
+    \end{description} 
+    
+    This function does enable computation with multiple observations taken at the same time (and assumes they are independently sampled) -- but the user must ensure that the vector of times contains no duplicates and the user must figure out which observations correspond to what entry of that time-vector.  Compare with the function leg\_log\_likelihood: the non-TensorFlow2 function isn't designed for speed, so it does this deduplication automatically at every invocation.
+
+    Outputs the log likelihood.
+
+    \item[leggps.posterior\_predictive] Indicates interpolations/forecasts, i.e $BE[z(t)|\vec x]$ and $B\Cov(z(t)|\vec x)B^\top$ for various values of $t$.
+
+        Inputs:
+        \begin{description}
+            \item[ts] A vector of $m$ times, $t_1 \leq t_2 \leq t_3 \cdots t_m$
+            \item[x] A matrix of observations at those times, i.e. $\vec x = x(t_1),x(t_2),\cdots$.  
+            \item[targets] A vector of times at which to evaluate the interpolations/forecasts, based on the data $\vec t,\vec x$.
+            \item[N,R,B,Lambda] Model parameters
+        \end{description}   
+
+        Outputs a tuple with two elements:
+        \begin{enumerate}
+            \item Means, a matrix indicating $BE[z(\mathtt{targets}_i)|\vec x]$
+            \item Variances, n $m \times n \times n$ tensor.  The ith element of this indicates $B\Cov(z(\mathtt{targets}_i)|\vec x)B^\top$
+        \end{enumerate}
+
+    \item[leggps.posterior] Indicates posterior moments, i.e $E[z(t)|\vec x]$ and $\Cov(z(t)|\vec x)$ for various values of $t$.
+
+        Inputs:
+        \begin{description}
+            \item[ts] A vector of $m$ times, $t_1 \leq t_2 \leq t_3 \cdots t_m$
+            \item[x] A matrix of observations at those times, i.e. $\vec x = x(t_1),x(t_2),\cdots$.  
+            \item[targets] A vector of times at which to evaluate the interpolations/forecasts, based on the data $\vec t,\vec x$.
+            \item[N,R,B,Lambda] Model parameters
+        \end{description}   
+
+        Outputs a tuple with two elements:
+        \begin{enumerate}
+            \item Means, a matrix indicating $E[z(\mathtt{targets}_i)|\vec x]$
+            \item Variances, n $m \times n \times n$ tensor.  The $i$th element of this indicates $\Cov(z(\mathtt{targets}_i)|\vec x)$
+        \end{enumerate}
+
+    \item[leggps.fit] uses a collection of independent samples to learn a LEG model.  For each sample $i$ we assume that
+        \begin{gather*}
+        t_{i1} \leq t_{i2} \leq t_{i2} \cdots \leq t_{i,m_i}\\    
+        z_i \sim \PEGGP(N,R) \qquad x_i(t)|z \sim \mathcal{N}(Bz_i(t),\Lambda \Lambda^\top) \\
+        \vec x_i = (x_{i}(t_{i1}),x_{i}(t_{i2}),x_{i}(t_{i3}),\cdots)
+        \end{gather*}
+        If the process is of the form $x:\ \mathbb{R} \rightarrow\mathbb{R}^n$ we expect each $\vec x_i$ to be an $m_i\times n$ matrix.  Even if $x$ is a process $x:\ \mathbb{R} \rightarrow\mathbb{R}^1$, we expect each $\vec x_i$ to be a $m_i \times 1$ matrix.  
+
+        We attempt to maximize the likelihood of this data with respect to $N,R,B,\Lambda$.
+
+        Inputs:
+        \begin{description}
+            \item[ts] a list of vectors of timepoints.  The $i$th entry in this list is itself a vector of times, $t_{i1} \leq t_{i2} \leq t_{i2} \cdots$.
+            \item[xs] a list of observation matrices.  The $i$th entry in this list corresponds to the matrix $\vec x_i \in \mathbb{R}^{m_i \times n}$.  
+            \item[ell]  the rank of the LEG model to be learned
+            \item[N,R,B,Lambda] initial conditions (otherwise will be randomly initialized)
+            \item[maxiter=200] maximum number of iterations of BFGS to use
+            \item[use\_tqdm\_notebook=False] if True, uses tqdm.notebook to display training progress
+            \item[diag\_Lambda=False] if True, enforces that Lambda is a diagonal matrix (can be essential if $n$ is large)
+        \end{description}
+
+        Output is a dictionary with many keys.  Perhaps the most important keys is ``params,'' which corresponds to the learned parameters, but there are many others which give useful information about the optimization process used to find those parameters:
+
+        \begin{description}
+            \item[params] A dictionary indicating the learned parameters.  It contains four elements: N, R, B, and Lambda, corresponding to $N,R,B,\Lambda$.  
+            \item[fun] The nats at completion of the optimization
+            \item[jac] The gradient at completion of the optimization
+            \item[hess\_inv] The estimate of the inverse of the hessian at completion of the optimization
+            \item[nfev] The number of times the likelihood was evaluated
+            \item[njev] The number of times the gradient of the likelihood was evaluated 
+            \item[status] A status code (see scipy.optimize.minimize for details)
+            \item[success] Whether we were able to find a local optimum (up to machine precision).  In practice, this usually is not true; nonetheless the learned parameter values perform well.
+            \item[message] A message indicating under what conditions the optimization terminated
+            \item[nit] The number of iterations used by the optimization algorithm
+            \item[losses] A list of the nats discovered along the optimization process.  Note that the final loss may not be the same as the nats for the learned params -- BFGS always picks the best parameter values that it found, which may not be the last parameter values it looked at.
+        \end{description}
+
+    
+
+\end{description}
+
+
+\subsection{Working with Cyclic Reductions}
+
+The leggps package also exposes an API for cyclic reduction algorithms.  
+
+This API is more low-level. All inputs are assumed to be TensorFlow2 objects and the outputs are likewise TensorFlow2 objects.  Most of the functions in this package should be run on the CPU not the GPU, because the CUDA implementations for Cholesky decomposition and triangular\_solve are currently still quite bad for handling many decompositions at once (as of this writing, 2020).   The m5 line of machines in the AWS platform is fairly cost-effective for running these functions on the CPU.
+
+This package follows the convention that block-tridiagonal matrices are represented as (Rs,Os) where Rs indicates the block diagonal components and Os indicates the lower off-diagonal blocks.  Thus Rs will be an $m\times \ell \times \ell$ tensor and Os will be an $m-1 \times \ell \times \ell$ tensor.  We assume all the blocks are the same size.
+
+leggps provides the following functions:
+
+\begin{description}
+    \item[leggps.cr.decompose(Rs,Os)] Let $J$ denote the block-tridiagonal matrix represented by Rs,Os.  This function returns an opaque representation of the CR decomposition of the block-tridiagonal matrix.  This can be used in other functions.
+    \item[leggps.cr.mahal(decomp,x)] Let $J$ denote the block-tridiagonal matrix whose CR decomposition is given by decomp.  Evaluates $x^T J^{-1} x$.
+    \item[leggps.cr.det(decomp)] Let $J$ denote the block-tridiagonal matrix whose CR decomposition is given by decomp.  Evaluates the log determinant of $J$.
+    \item[leggps.cr.mahal\_and\_det(Rs,Os,x)] Let $J$ denote the block-tridiagonal matrix represented by Rs,Os.  Uses CR algorithms to to evaluate $x^T J^{-1} x$ and compute the log determinant of $J$.   This function may require half as much RAM than using the functions above -- it never stores the entire decomposition at once.
+    \item[leggps.cr.solve(decomp,y)] Let $J$ denote the block-tridiagonal matrix whose CR decomposition is given by decomp.  Returns $J^{-1} x$.
+    \item[leggps.cr.sample(decomp)] Let $J$ denote the block-tridiagonal matrix whose CR decomposition is given by decomp.  Samples from $\mathcal{N}(0,J^{-1})$.
+    \item[leggps.cr.inverse\_blocks(decomp)] Let $J$ denote the block-tridiagonal matrix whose CR decomposition is given by decomp.  Returns the diagonal and off-diagonal blocks of $J^{-1}$.
+\end{description}
+
+
+%  _______  _______ _____ _   _ ____ ___ ___  _   _ ____  
+% | ____\ \/ /_   _| ____| \ | / ___|_ _/ _ \| \ | / ___| 
+% |  _|  \  /  | | |  _| |  \| \___ \| | | | |  \| \___ \ 
+% | |___ /  \  | | | |___| |\  |___) | | |_| | |\  |___) |
+% |_____/_/\_\ |_| |_____|_| \_|____/___\___/|_| \_|____/ 
+                                                        
+\section{Extensions}
+
+There are a number of ways this package could be extended if there was sufficient interest.   Raise an issue on the GitHub repo if these or other extensions would be important to your work.  
+
+Some extensions we have considered:
+
+\begin{itemize}
+    \item We assume each observation is always fully observed, i.e. if we observe $x(t_i) \in \mathbb{R}^n$ then we observe all $n$ numbers.  This restriction could be lifted.
+    \item The CR algorithms assume all blocks are the same size.  If you need the blocks need to be of different sizes the TensorFlow2 raggedtensor API could conceivably be used to lift this limitation.
+    \item We assume the noise variance, $\Lambda$, is the same for each observation.  It would be fairly straightforward to lift this restriction.
+    \item The observations do not need to lie along a line -- in general, they could lie along any one-dimensional tree-structured topology. 
+    \item The model does not need to be stationary.  If there are specific nonstationarities you would like to capture, the authors would be interested in discussing them with you and figuring out which (of many possible) options would be most useful in incorporating nonstationarity.  
+    \item We would like to think about better initialization strategies.  If you are having difficulty initializing the LEG model for a scientific problem, the authors would be interested in discussing your problem and thinking about what might work.
+\end{itemize}
+
+There are also two extensions we have considered in some depth.  We detail these below.
+
+\subsection{Multi-dimensional GPs}
+
+Let $z:\ \mathbb{R}^d \rightarrow \mathbb{R}^n$ denote a Gaussian Process with covariance kernel
+\[
+\Sigma:\ \mathbb{R}^d \rightarrow \mathbb{R}^{n \times n}
+\]
+How can we use LEG kernels could be used to model $\Sigma$?  One technique to build one-dimensional models into multi-dimensional models is by using Kronecker products \cite{tsiligkaridis2013covariance}.  Here we generalize this to processes with $n>1$.  
+
+\begin{definition}
+    For each $k\in {1\cdots d}$, let $C_k:\ \mathbb{R} \rightarrow \mathbb{R}^{\ell \times \ell}$ denote integrable continuous kernels.  If $C:\ \mathbb{R}^d \rightarrow \mathbb{R}^{n \times n}$ is given by
+    \begin{align*}
+    C_{ij}(\tau)&= \prod_k C_{kij}(\tau_k)
+    \end{align*}
+    then we will say $C$ is the \textbf{Kronecker-Hadamard product} of $C_1,C_2\cdots C_d$, and write $C = \circledast_{k=1}^d C_k$.
+\end{definition}
+
+\begin{prop}
+    Let $C_1,C_2\cdots C_d$ denote integrable continuous positive-definite kernels.  Then $C=\circledast_k^d C_k$ is also positive definite. 
+\end{prop}
+
+\begin{proof}
+Let $M_k$ denote the spectrum of $C_k$.  Recall that $M_k$ is a positive-definite-matrix-valued function.  Let $M_{ij}(\omega)=\prod_k M_{kij}(\omega)$.  Observe that $M$ is the spectrum of $C$.  On the other hand, the Schur product theorem shows that $M(\omega)$ is a positive definite matrix.  Bochner's theorem then yields that $C$ is positive definite.
+\end{proof}
+
+We can combine PEG kernels via these Kronecker-Hadamard products, leading to a multidimensional extension to LEG models.
+
+\begin{definition}
+    Fix $\ell,\zeta$.  For each $r \in \{1 \cdots \zeta\},k \in \{1 \cdots d\}$, let $N_{rk},R_{rk}$ be $\ell\times \ell$ matrices.  Consider the kernel defined by 
+    \[
+    C_\KPEG(N,R,B,\Lambda) \triangleq \sum_{r=1}^{\zeta} \circledast_{k=1}^d C_\PEG(N_{rk},R_{rk})
+    \]
+    We will call this the Kroneckered Purely Exponentially Generated (KPEG) kernel.  If $z$ is a zero-mean Gaussian Process whose covariance is a KPEG kernel we will say it is a KPEG process.  Furthermore, let $B\in \mathbb{R}^{n\times \ell},\Lambda \in \mathbb{R}^{n\times n}$.  If $z$ is a KPEG process and $x(\tau)|z \sim \mathcal{N}(Bz(\tau),\Lambda \Lambda^\top)$ we will say $x$ is a KLEG process.  We will call the covariance kernel of $x$ a KLEG kernel, denoted $C_\KLEG(N,R,B,\Lambda)$.
+\end{definition}
+
+\begin{theorem}
+Let $\Sigma$ any positive-definite integrable continuous kernel, and fix $\varepsilon>0$.  There exists a KLEG kernel such that $\Vert C(\tau)z-C_\KLEG(\tau)z\Vert < \varepsilon z$. 
+\end{theorem}
+\begin{proof}
+The proof is essentially the same as that of Theorem \ref{thm:legflex}.  Note the spectrum of a $C_\KLEG$ kernel can be understood as a mixture of matrix-valued densities on $\mathbb{R}^d$, and the $N,R$ parameters can be used to arbitrarily shift and scale these spectral densities.  Applying Theorem \ref{lem:kdereg}, it follows that we can match every element of any spectrum arbitrarily well in an integrated-absolute-value-sense using KPEG kernels.  It follows that we can match any integrable continuous positive-definite kernel in a uniform sense.
+\end{proof}
+
+We can compute efficiently with such kernels if the observations are taken on a $d$-dimensional grid.  For example, GPyTorch offers algorithms for Gaussian processes where the runtime is limited only by the speed with which one can multiply by the covariance matrix \cite{gardner2018gpytorch}.  If we have observations from a KPEG model on a grid, this can be done efficiently:
+
+\begin{theorem}
+Let $\Omega = \prod_k^d \{\tau_{k1},\tau_{k2} \cdots \tau_{km} \} \subset \mathbb{R}^d$ denote a grid.  Let $x$ denote a KLEG process and let $\vec x$ denote observations of $x$ on this grid.  Let $\Sigma$ denote the covariance matrix of $\vec x$ under the KLEG model.  For any $y$ the time required to compute $\Sigma y$ scales like $m^d$.  In particular, in the limiting case where we have an observation at each grid-point, we have $m^d$ observations and the computation scales linearly in the number of observations.  
+\end{theorem}
+\begin{proof}
+It suffices to show that we can perform matrix-multiplications in $m^d$ time for matrices which are the Kronecker-Hadamard product of $d$ matrices when the inverses of those matrices are block-tridiagonal with $m$ blocks of size $\ell$.  It suffices to show for the case $d=2$ and apply induction.  
+
+Let $C,D$ denote block-tridiagonal matrices.  We will index them by $C_{i,j}(\tau_{1s},\tau_{1s'})$ and $D_{i,j}(\tau_{2u},\tau_{2u'})$.  Because $D^{-1}$ is block-tridiagonal, we can compute $Dy$ in linear time.  That is, we can compute 
+\[
+(Dy)_{i,u} = \sum_{j=1}^\ell \sum_{u'=1}^m D_{i,j}(\tau_{2u},\tau_{2u'}) y_j(\tau_{2u'})
+\]
+in $O(m)$ steps.  It follows we can also compute
+\[
+\xi_{i,j,u} = \sum_{u'} D_{i,j}(\tau_{2u},\tau_{2u'}) y_j(\tau_{2u'})
+\]
+in $O(m)$ steps (for each $j$, define $\tilde y$ by $\tilde y_{j'} = \delta_{j,j'} y_{j'}$, then  $\xi_{i,j,u} = D\tilde y$).
+
+We are interested in the Kronecker, i.e.
+\[
+F_{i,j}(\tau_{1s},\tau_{2u},\tau_{1s'},\tau_{2u'}) = C_{i,j}(\tau_{1s},\tau_{1s'}) D_{i,j}(\tau_{2u},\tau_{2u'})
+\]
+Given an observation $y$ we need to compute
+\begin{align*}
+(Fy)_{i}(\tau_{1s},\tau_{2u}) 
+  &= \sum_{j,s',u'} F_{i,j}(\tau_{1s},\tau_{2u},\tau_{1s'},\tau_{2u'}) y_j(\tau_{1s'},\tau_{2u'})\\
+  &= \sum_{j,s'} C_{i,j}(\tau_{1s},\tau_{1s'}) \underbrace{\sum_{u'} D_{i,j}(\tau_{2u},\tau_{2u'}) y_j(\tau_{1s'},\tau_{2u'})}_{\triangleq \xi_{i j u s'}}\\
+\end{align*}
+As discussed earlier, we can compute $\xi_{ijus'}$ independently for each $s'$ in $O(m)$ time; the total computation time will be $O(m^2)$.  Once this is computed, we can compute $(Fy)(\cdot,\tau_{2u})$ in $O(m)$ time for each $u$ -- an overall cost of $O(m^2)$.  The result is that the total computation requires $O(m^2)$ operations, as desired.
+
+\end{proof}
+
+Combining the previous two propositions, we see that arbitrarily accurate linear-time inference is possible for any Gaussian Process as long as we observe the process on a multidimensional grid.  Note that this grid does not need to be regularly spaced.  Moreover, it is straightforward to see that we do not need to have observations from every point in the grid.   However, note that the computational cost will scale with the number of gridpoints (not the number of observations).  In particular, if our observations occur on a very small proportion of the gridpoints, then different methods may be required.
+%this method will not work very well.
+
+\subsection{Non-Gaussian observations}  
+
+Many approaches have been developed to adapt GP inference methods to non-Gaussian observations, including Laplace approximations, expectation propagation, variational inference, and a variety of specialized Monte Carlo methods \cite{hartikainen2011sparse,riihimaki2014laplace,nguyen2014automated,nishihara2014parallel}.  Many of these can be easily adapted to the LEG model, using the fact that the sum of a block-tridiagonal matrix (from the precision matrix of the LEG prior evaluated at the sampled data points) plus a diagonal matrix (contributed by the likelihood term of each observed data point) is again block-tridiagonal, leading to linear-time updates \cite{smith2003estimating,Paninski2010,fahrmeir2013multivariate,polson2013bayesian,Khan,Nickisch}.
+
+Here we sketch one way this can be achieved.  
+
+\begin{definition}
+Let $p(x;\theta,\gamma)$ denote a family of densities indexed by $\theta \in \mathbb{R}^n$ and additional hyperparameters $\gamma$.  Let $B \in \mathbb{R}^{n \times \ell}$ and $z \sim \PEG(N,R)$.  Let $x(t) | z \sim p(B z(t))$, independently for each $t$.  Then we will say that $x$ is the \textbf{Non-Gaussian Latent Exponentially Generated} (NGLEG) model parameterized by $p,N,R,B$.
+\end{definition}
+
+How can we learn $N,R,B,\theta,\gamma$ from data?  Let us say we have $t_1 < t_2 \cdots t_m$ and we have observed $\vec x = (x(t_1) \cdots x(t_m)$ from a NGLEG model.  We adopt a Variational Inference point of view.  Let $\vec z=(z(t_1),z(t_2),\cdots z(t_m))$.  Let $\Sigma(N,R)$ denote the prior covariance of $\vec z$ when $z \sim \PEG(N,R)$.  We posit a family of possible posterior distributions for $\vec z$, namely
+\[
+\vec z \sim q(z;\mu,J) \triangleq \mathcal{N}(z;\mu,J^{-1})
+\]
+where $J$ is a block-tridiagonal matrix.  We then seek to maximize a lower bound on the likelihood of the observations, namely 
+\begin{align*}
+\mathcal{L}(N,R,B,\gamma,J,\mu) 
+   &= \mathcal{L}_\mathrm{data}(B,\gamma,J,\mu) + \mathcal{L}_\mathrm{KL}(N,R,J,\mu)\\
+\mathcal{L}_\mathrm{data}(B,\gamma,J,\mu)&= \sum_i \mathbb{E}_{\vec z \sim q} \left[\log p(\vec x_i ; B\vec z_i,\gamma)\right]\\
+\mathcal{L}_\mathrm{KL}(N,R,J,\mu) &= \frac{1}{2}\mathbb{E}_{\vec z \sim q} \left[ -\vec z^\top \Sigma(N,R)^{-1} \vec z -\log |\Sigma(N,R)||J| + (\vec z - \mu)^\top J (\vec z - \mu)\right]
+\end{align*}
+We refer the reader to \cite{blei2017variational} for a proof that this is indeed a lower-bound on the likelihood of $\vec x$.  Note that $\mathcal{L}_\mathrm{KL}$ and its gradients can be computed in $O(m)$ time using Cyclic Reduction algorithms.  For the data term we can either use Monte-Carlo samples from $\vec z \sim q$ or reduce the expectation to something which can be computed in terms of the mean and variance of $\vec z$.  The Laplace method is an example of the latter approach, approximating the log likelihoods by taking a second order taylor expansion of $z_i \mapsto \log p(\vec x_i ; B\vec z_i,\gamma)$ around the $\mu_i$.  The Polya-Gamma trick is another example of this method which works for Bernoulli and Negative Binomial likelihoods; this trick yields a lower-bound which can be computed in terms of the mean and variance of $\vec z_i$ \cite{polson2013bayesian}.   Regardless of which approach we use for the data term, we ultimately obtain approximate gradients of $\mathcal{L}$ with respect to $N,R,B,\gamma,J,\mu$ and use these gradients to optimize the parameters.  
+
+
+
+\bibliographystyle{unsrt}
+\bibliography{refs}
+
+\end{document}

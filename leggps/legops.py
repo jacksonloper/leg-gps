@@ -3,34 +3,7 @@ from . import constructions
 from . import cr
 import numpy as np
 
-def log_likelihood_regular(delta,x,N,R,B,Lambda):
-    '''
-    Input:
-    - delta: scalar
-    - x: nchain x n, representing X(0),X(delta),X(2*delta)...
-    - N: ell x ell
-    - H: ell x ell 
-    - B: n x ell
-    - Lambda: ell x ell
-
-    Output: the marginal log likelihood
-        log p(
-           X(0) = x[0],
-           X(delta) = x[1],
-           X(2*delta) = x[2],
-           ...
-        )
-        under the model (Z,X)~LEGGP(N,R,B,Lambda).
-    '''
-
-    # construct the prior
-    dblocks,offblocks = constructions.PEGSigi_regular(x.shape[0],delta,N,R)
-
-    # get the likelihood 
-    return log_leg_likelihood_fromblocks(x,dblocks,offblocks,B,Lambda)
-
-
-def log_likelihood_irregular(ts,x,idxs,N,R,B,Lambda):
+def leg_log_likelihood_tensorflow(ts,x,idxs,N,R,B,Lambda):
     '''
     Input:
     - ts: list of times
@@ -93,32 +66,6 @@ def leg_log_likelihood(ts,x,N,R,B,Lambda):
         x,idxs,dblocks,offblocks,B,Lambda).numpy()
 
 
-def insample_posterior_regular(delta,x,N,R,B,Lambda):
-    '''
-    Input:
-    - ts: list of times
-    - x: nchain x n, representing X(0),X(delta),X(2*delta)...
-    - N: ell x ell
-    - H: ell x ell 
-    - B: n x ell
-    - Lambda: ell x ell
-
-    Output:
-    - mean:  E[Z(delta*i) |X] for each i
-    - variance: Cov(Z(delta*i) |X) for each i
-    - covariance: Cov(Z(delta*i),Z(delta*(i+1)) |X) for each i
-
-    under the model (Z,X)~LEGGP(N,R,B,Lambda).
-    '''
-
-    # construct the prior precision
-    dblocks,offblocks = constructions.PEGSigi_regular(x.shape[0],delta,N,R)
-
-    # get the posterior
-    mean,Sig_diag,Sig_off= insample_posterior_fromblocks(x,dblocks,offblocks,B,Lambda)
-
-    return mean,Sig_diag,Sig_off
-
 def insample_posterior_irregular(ts,x,N,R,B,Lambda):
     '''
     Input:
@@ -147,11 +94,12 @@ def insample_posterior_irregular(ts,x,N,R,B,Lambda):
 
     return mean,Sig_diag,Sig_off,ts2,idxs
 
-def outsample_posterior_regular(delta,x,N,R,B,Lambda,ts):
+def posterior_predictive(ts,x,targets,N,R,B,Lambda):
     '''
     Input:
-    - delta: scalar
-    - x: nchain x n, representing X(0),X(delta),X(2*delta)...
+    - ts: a vector of times
+    - x: nchain x n, representing X(ts[0]),X(ts[1]),X(ts[2])...
+    - targets: a vector of times
     - N: ell x ell
     - H: ell x ell 
     - B: n x ell
@@ -159,50 +107,15 @@ def outsample_posterior_regular(delta,x,N,R,B,Lambda,ts):
     - ts: a series of positions
 
     Output: 
-    - mean:  E[Z(ts[i]) |X] for each i
-    - variance: Cov(Z(ts[i]) |X) for each i
-
-    under the model (Z,X)~LEGGP(N,R,B,Lambda)
-    '''
-
-    # get in-sample distribution of Z|X
-    dblocks,offblocks = constructions.PEGSigi_regular(x.shape[0],d,N,R)
-    mean,Sig_diag,Sig_off=insample_posterior_fromblocks(x,dblocks,offblocks,B,Lambda)
-
-    # extrapolate to out-of-sample distribution of Z|X
-    ots = tf.range(0,x.shape[0],delta)
-    return PEG_intercast(mean,Sig_diag,Sig_off,N,R,ots,ts)
-
-def posterior_predictive_distributions_regular(delta,x,N,R,B,Lambda,ts):
-    '''
-    Input:
-    - delta: scalar
-    - x: nchain x n, representing X(0),X(delta),X(2*delta)...
-    - N: ell x ell
-    - H: ell x ell 
-    - B: n x ell
-    - Lambda: ell x ell
-    - ts: a series of positions
-
-    Output: 
-    - mean:  E[Y(ts[i]) |X] for each i
-    - variance: Cov(Y(ts[i]) |X) for each i
+    - mean:  E[Y[i] |X] for each i
+    - variance: Cov(Y[i]) |X) for each i
 
     under the posterior predictive model
-    - (Z,X)~LEGGP(N,R,B,Lambda)
-    - Y(t) ~ N(BZ(t),Lambda Lambda^T)
+      Z~PEG(N,R)
+      X[i]|Z ~ N(B Z(t[i]), Lambda Lambda^T)
+      Y[i] ~ N(BZ(targets[i]),Lambda Lambda^T)
     '''
 
-    # get distribution of Z|X
-    means,variances=outsample_posterior_regular(delta,x,N,R,B,Lambda,ts)
-
-    # get distribution of X|Z
-    means2=tf.einsum('kl,il->ik',B,means)
-    variances2=tf.einsum('kl,ilm,nm -> ikn',B,variances,B) + (Lambda@tf.transpose(Lambda))[None]
-
-    return means2,variances2
-
-def posterior_predictive(ts,x,targets,N,R,B,Lambda):
     ts = tf.convert_to_tensor(ts,dtype=tf.float64)
     targets = tf.convert_to_tensor(targets,dtype=tf.float64)
     x = tf.convert_to_tensor(x,dtype=tf.float64)
@@ -214,6 +127,25 @@ def posterior_predictive(ts,x,targets,N,R,B,Lambda):
     return means2.numpy(),variances2.numpy()
    
 def posterior(ts,x,targets,N,R,B,Lambda):
+    '''
+    Input:
+    - ts, a set of times
+    - x: nchain x n, representing X(ts[0]),X(ts[1]),X(ts[2])...
+    - targets: a set of times
+    - N: ell x ell
+    - H: ell x ell 
+    - B: n x ell
+    - Lambda: ell x ell
+
+    Output:
+    - mean:  E[Z(targets[i]) |X] for each i
+    - variance: Cov(Z(targets[i]) |X) for each i
+    - covariance: Cov(Z(targets[i]) |X)) for each i
+
+    under the model
+      Z~PEG(N,R)
+      X[i]|Z ~ N(B Z(t[i]), Lambda Lambda^T)
+    '''
     ts = tf.convert_to_tensor(ts,dtype=tf.float64)
     targets = tf.convert_to_tensor(targets,dtype=tf.float64)
     x = tf.convert_to_tensor(x,dtype=tf.float64)
@@ -474,34 +406,6 @@ def PEG_intercast(mean,Sig_diag,Sig_off,N,R,ots,ts,thresh=1e-10):
 
     return tf.stack(means,axis=0),tf.stack(variances,axis=0)
 
-def insample_posterior_fromblocks(x,dblocks,offblocks,B,Lambda):
-    '''
-    Input:
-    - x: nchain x n
-    - dblocks,offblocks denote the sparse representation of the inverse
-      covariance of Z(t1),Z(t2),...Z(tm) when Z~PEGGP(N,R) for some (N,R).
-    - B, Lambda: matrices
-
-    Output:
-    - mean:  E[Z(ti) |X] for each i
-    - variance: Cov(Z(ti) |X) for each i
-
-    under the model (Z,X)~LEGGP(N,R,B,Lambda).
-    '''
-
-    LLt = constructions.calc_LambdaLambdat(Lambda)
-
-    BtLambdaiB = tf.transpose(B)@tf.linalg.solve(LLt,B)
-    Lambdaix = tf.transpose(tf.linalg.solve(LLt,tf.transpose(x))) # nchain x m
-    posterior_precision_dblocks = dblocks + BtLambdaiB[None]
-    posterior_offset = tf.transpose(tf.transpose(B)@tf.transpose(Lambdaix))
-    posterior_decomp = cr.decompose(posterior_precision_dblocks,offblocks)
-
-    mean = cr.solve(posterior_decomp,posterior_offset)
-    Sig_diag,Sig_off = cr.inverse_blocks(posterior_decomp)
-
-    return mean,Sig_diag,Sig_off
-
 def insample_posterior_fromblocks_irregular(x,idxs,dblocks,offblocks,B,Lambda):
     '''
     Input:
@@ -537,59 +441,6 @@ def insample_posterior_fromblocks_irregular(x,idxs,dblocks,offblocks,B,Lambda):
     Sig_diag,Sig_off = cr.inverse_blocks(posterior_decomp)
 
     return mean,Sig_diag,Sig_off
-
-def log_leg_likelihood_fromblocks(x,dblocks,offblocks,B,Lambda):
-    '''
-    Input:
-    - x: nchain x n
-    - dblocks,offblocks denote the sparse representation of the inverse
-      covariance of Z(t1),Z(t2),...Z(tm) when Z~PEGGP(N,R) for some (N,R).
-    - B, Lambda: matrices
-
-    Output: the marginal log likelihood
-        log p(
-           X(t0) = x[0],
-           X(t1) = x[1],
-           X(t2) = x[2],
-           ...
-        )
-        under the model (Z,X)~LEGGP(N,R,B,Lambda).
-    '''
-    nchain,n,n=dblocks.shape
-    m=B.shape[0]
-
-    LLt = constructions.calc_LambdaLambdat(Lambda)
-
-    ############## MAHAL ################
-    # MAHAL PART I,   <x | (LLt)^-1 | x>
-    Lambdaix = tf.transpose(tf.linalg.solve(LLt,tf.transpose(x))) # nchain x m
-    mahal1 = tf.reduce_sum(x*Lambdaix)
-
-    # MAHAL PART II,  <B^T LLt^-1 x | (J + B^T LLt^-1 B)^-1 | B^T LLt^-1 x >
-    BtLambdaiB = tf.transpose(B)@tf.linalg.solve(LLt,B)
-    dblocks2 = dblocks + BtLambdaiB[None]
-
-    BTLambdaix = tf.transpose(tf.transpose(B)@tf.transpose(Lambdaix))
-    post_decomp = cr.decompose(dblocks2,offblocks)
-    mahal2 = cr.mahal(post_decomp,BTLambdaix)
-
-    # COLLECT
-    mahal = -.5*(mahal1 - mahal2)
-
-    ############## DET ################
-
-    ldet = nchain*tf.linalg.slogdet(LLt)[1]
-    prior_decomp= cr.decompose(dblocks,offblocks)
-    sigdet = -cr.det(prior_decomp)
-    postdet = cr.det(post_decomp)
-    twopidet = np.log(2*np.pi)*nchain*m
-
-    det = -.5*(ldet + sigdet + postdet+twopidet)
-
-    ############ collect ###########
-
-    return mahal+det
-
 
 def log_leg_likelihood_fromblocks_irregular(x,idxs,dblocks,offblocks,B,Lambda):
     '''

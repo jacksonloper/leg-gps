@@ -1,5 +1,6 @@
 import tensorflow as tf
 import numpy as np
+from . import gradexps
 
 r'''
 DEFINITIONS
@@ -106,6 +107,7 @@ def PEGSigi_regular(n,d,N,R):
 
     return dblocks,offblocks
 
+
 def PEGSigi_irregular(ts,N,R):
     ''' 
     Input:
@@ -119,12 +121,11 @@ def PEGSigi_irregular(ts,N,R):
     '''
 
     G = calc_G(N,R)
-    # Gval,Gvec,Gveci=calc_Gvvv(G)
 
     ds=ts[1:]-ts[:-1]
 
-    # expd=calc_eG(Gval,Gvec,Gveci,ds)  
-    expd = tf.linalg.expm(-.5*G[None]*ds[:,None,None])  
+    # expd = tf.linalg.expm(-.5*G[None]*ds[:,None,None]) 
+    expd=gradexps.expm(G,-.5*ds)
     expdT=tf.transpose(expd,[0,2,1])
     eye  = tf.linalg.eye(G.shape[0],dtype=expd.dtype)
 
@@ -162,23 +163,28 @@ def C_PEG(ts,N,R,**kwargs):
 def C_LEG(ts,N,R,B,Lambda):
     '''
     Input:
-    - ts, some times (in increasing order)
+    - ts, some times
     - N, diffusion
-    - H, torsion
+    - R, torsion
     - B, n x ell, a matrix
     - Lambda, n x n
 
-    Output:
-    - cov, the first column of blocks of noised_transformed_Sig(Sig,B,Lambda)
+    Output: the values of C_LEG(t;N,R,B,Lambda) for each t in ts
     '''
+
+    ts=tf.convert_to_tensor(ts,dtype=tf.float64)
+    N=tf.convert_to_tensor(N,dtype=tf.float64)
+    R=tf.convert_to_tensor(R,dtype=tf.float64)
+    B=tf.convert_to_tensor(B,dtype=tf.float64)
+    Lambda=tf.convert_to_tensor(Lambda,dtype=tf.float64)
 
     Sig=C_PEG(ts,N,R)
     LLt = calc_LambdaLambdat(Lambda)
 
     sig2 = tf.einsum('ijk,aj,bk->iab',Sig,B,B)
-    sig3 = tf.concat([[sig2[0] + LLt],sig2[1:]],axis=0)
+    stooge_term = tf.cast(ts==0,dtype=N.dtype)[:,None,None]*LLt[None,:,:]
 
-    return sig3.numpy()
+    return (sig2+stooge_term).numpy()
 
 
 def dedup_ts(allts,thresh=1e-10,check=True):
@@ -201,3 +207,51 @@ def dedup_ts(allts,thresh=1e-10,check=True):
     idxs=tf.cumsum(tf.cast(good,dtype=tf.int64))-1
 
     return ts,idxs
+
+def from_celerite(a,b,c,d):
+    '''
+    finds N,R,B such that 
+
+        LEG(tau;N,R,B,0) = a*cos(d*tau)*exp(-c*tau) + b*sin(d*tau)*exp(-c*tau)
+
+    '''
+
+    assert np.abs(b*d)<a*c,'not positive definite'
+
+    b=b/a
+    
+    N1=np.sqrt(2*c-2*b*d)
+    Rv = np.sqrt(2*c**2 + 4*d**2 + 2*b**2*d**2)
+    No = np.sqrt(c+b*d)
+    N2 = No
+    
+    N=np.r_[N1,0,No,N2].reshape((2,2))
+    R=np.r_[0,Rv,0,0].reshape((2,2))
+    B=np.r_[np.sqrt(a),0]
+    return N,R,B
+
+def test_from_celerite(N):
+    import tqdm.notebook
+    import numpy.random as npr
+    import numpy as np
+    import scipy as sp
+    import scipy.linalg
+    def genexample():
+        while True:
+            a,b,c,d=npr.randn(4)
+            a=np.abs(a)+.01
+            c=np.abs(c)+.01
+
+            if np.abs(b*d)<a*c:
+                return a,b,c,d
+
+    for i in tqdm.notebook.tqdm(range(N)):     
+        a,b,c,d=genexample()
+        N,R,B = from_celerite(a,b,c,d)
+        G=N@N.T + R-R.T
+        tau=npr.randn()**2
+
+        Ccel=a*np.cos(d*tau)*np.exp(-c*tau) + b*np.sin(d*tau)*np.exp(-c*tau)
+        Cleg=B@sp.linalg.expm(-G*tau/2)@B.T
+
+        assert np.allclose(Ccel,Cleg)
