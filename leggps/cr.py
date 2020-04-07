@@ -2,18 +2,18 @@ __all__ = ['decompose', 'mahal','mahal_and_det','solve','sample','inverse_blocks
 import tensorflow as tf
 
 r'''
-             _     _ _                    _ 
+             _     _ _                    _
  _ __  _   _| |__ | (_) ___    __ _ _ __ (_)
 | '_ \| | | | '_ \| | |/ __|  / _` | '_ \| |
 | |_) | |_| | |_) | | | (__  | (_| | |_) | |
 | .__/ \__,_|_.__/|_|_|\___|  \__,_| .__/|_|
-|_|                                |_|      
+|_|                                |_|
 '''
 
 # @tf.function(autograph=False)
 def decompose(Rs,Os):
     '''
-    Let J denote a symmetric positive-definite block-tridiagonal matrix whose 
+    Let J denote a symmetric positive-definite block-tridiagonal matrix whose
     - diagonal blocks are given by Rs
     - lower off-diagonal blocks are given by Os
 
@@ -30,7 +30,7 @@ def decompose(Rs,Os):
         # do the work
         (nchain,D1,F,G),(Rs,Os) = _decompose_workhorse(Rs,Os)
 
-        # collect the information 
+        # collect the information
         ms=ms+[nchain]
         Ds=Ds+[D1]
         Fs=Fs+[F]
@@ -43,11 +43,11 @@ def decompose(Rs,Os):
 
 def mahal_and_det(Rs,Os,x):
     '''
-    Let J denote a symmetric positive-definite block-tridiagonal matrix whose 
+    Let J denote a symmetric positive-definite block-tridiagonal matrix whose
     - diagonal blocks are given by Rs
     - lower off-diagonal blocks are given by Os
 
-    returns 
+    returns
     - mahal: x J^-1 x
     - det: |J|
 
@@ -78,13 +78,17 @@ def mahal_and_det(Rs,Os,x):
         mahal+= tf.reduce_sum(newx**2)
 
         # recurse on the odd entries
-        ytilde = ytilde[1::2] - Ux(Fs[i],Gs[i],newx)
+        ytilde = ytilde[1::2] - Ux(F,G,newx)
 
     # finish it off
     D1=tf.linalg.cholesky(Rs)
     det += tf.reduce_sum(tf.math.log(tf.linalg.diag_part(D1)))
 
-    return mahal,det
+    y=ytilde[::2]
+    newx = tf.linalg.triangular_solve(D1,y[...,None])[...,0]
+    mahal+= tf.reduce_sum(newx**2)
+
+    return mahal,2*det
 
 def det(decomp):
     '''
@@ -96,7 +100,7 @@ def det(decomp):
 
 def mahal(decomp,y):
     '''
-    get y^T J^-1 y 
+    get y^T J^-1 y
     '''
 
     v=halfsolve(decomp,y)
@@ -145,12 +149,12 @@ def inverse_blocks(decomp):
     return Sig_diag,Sig_off
 
 r'''
-                    _    _                              
-__      _____  _ __| | _| |__   ___  _ __ ___  ___  ___ 
+                    _    _
+__      _____  _ __| | _| |__   ___  _ __ ___  ___  ___
 \ \ /\ / / _ \| '__| |/ / '_ \ / _ \| '__/ __|/ _ \/ __|
  \ V  V / (_) | |  |   <| | | | (_) | |  \__ \  __/\__ \
   \_/\_/ \___/|_|  |_|\_\_| |_|\___/|_|  |___/\___||___/
-                                                        
+
 '''
 
 
@@ -175,12 +179,12 @@ def _inverse_blocks_workhorse(D,F,G,Sig_diag,Sig_off):
 # @tf.function(autograph=False)
 def halfsolve(decomp,y):
     '''
-    Input 
+    Input
     - decomp, the cyclic reduction representation of a block tridiagonal matrix
       with nchain diagonal blocks, each of size nblock
-    - y: nchain x nblock 
+    - y: nchain x nblock
 
-    returns the value of L^-1 T_n y 
+    returns the value of L^-1 T_n y
     '''
 
     ms,Ds,Fs,Gs = decomp
@@ -204,7 +208,7 @@ def backhalfsolve(decomp,ycrr):
     Input:
     - decomp, the cyclic reduction representation of a block tridiagonal matrix
       with nchain diagonal blocks, each of size nblock
-    - ycrr, the cyclic reduction representation of a vector y: 
+    - ycrr, the cyclic reduction representation of a vector y:
 
     returns the value of T_n^T L^-T y
     '''
@@ -241,19 +245,19 @@ def _decompose_workhorse(Rs,Os):
     UUt_diags, UUt_offdiag = UUt(F,G)
 
     # get the residual
-    Rt=Rs[1::2] - UUt_diags  
-    Ot= -UUt_offdiag   
+    Rt=Rs[1::2] - UUt_diags
+    Ot= -UUt_offdiag
 
     return (nchain,D1,F,G),(Rt,Ot)
 
 
 r'''
-                                  _   
- ___ _   _ _ __  _ __   ___  _ __| |_ 
+                                  _
+ ___ _   _ _ __  _ __   ___  _ __| |_
 / __| | | | '_ \| '_ \ / _ \| '__| __|
-\__ \ |_| | |_) | |_) | (_) | |  | |_ 
+\__ \ |_| | |_) | |_) | (_) | |  | |_
 |___/\__,_| .__/| .__/ \___/|_|   \__|
-          |_|   |_|                   
+          |_|   |_|
 
 '''
 
@@ -280,17 +284,17 @@ def interleave(a,b):
 
 def Ux(diags,offdiags,x):
     '''
-    Let U be an upper block-bidiagonal matrix whose 
+    Let U be an upper block-bidiagonal matrix whose
     - diagonals are given by diags
     - upper off-diagonals are given by offdiags
-    
+
     We would like to compute U@x
     '''
 
     n=diags.shape[0]
     m=offdiags.shape[0]
     k=diags.shape[1]
-    
+
     if n==m:
         return tf.einsum('ijk,ik->ij',diags,x[:-1]) + tf.einsum('ijk,ik->ij',offdiags,x[1:])
     else:
@@ -300,15 +304,15 @@ def Ux(diags,offdiags,x):
 
 def Utx(diags,offdiags,x):
     '''
-    Let U be an upper block-bidiagonal matrix whose 
+    Let U be an upper block-bidiagonal matrix whose
     - diagonals are given by diags
     - upper off-diagonals are given by offdiags
-    
+
     We would like to compute U.T@x
     '''
 
     n=diags.shape[0]
-    m=offdiags.shape[0]    
+    m=offdiags.shape[0]
     k=diags.shape[1]
 
     if n==m:
@@ -322,29 +326,29 @@ def Utx(diags,offdiags,x):
 
 def UUt(diags,offdiags):
     '''
-    Let U be an upper block-bidiagonal matrix whose 
+    Let U be an upper block-bidiagonal matrix whose
     - diagonals are given by diags
     - upper off-diagonals are given by offdiags
-    
-    We would like to compute the diagonal and lower-off-diagonal blocks of 
+
+    We would like to compute the diagonal and lower-off-diagonal blocks of
     U@U.T
     '''
-    
+
     n=diags.shape[0]
     m=offdiags.shape[0]
-    
+
     if n==m:
         tq=tf.einsum('ijk,ilk->ijl',diags,diags)
         tq+=tf.einsum('ijk,ilk->ijl',offdiags,offdiags)
-        
+
         offdiags=tf.einsum('ijk,ilk->ilj',offdiags[:-1],diags[1:])
         return tq,offdiags
-        
+
     else:
         leaf1=tf.einsum('ijk,ilk->ijl',diags,diags)
         leaf2=tf.einsum('ijk,ilk->ijl',offdiags,offdiags)
         tq= tf.concat([leaf1[:-1]+leaf2,[leaf1[-1]]],axis=0)
-        
+
         offdiags=tf.einsum('ijk,ilk->ilj',offdiags,diags[1:])
         return tq,offdiags
 
@@ -375,10 +379,10 @@ def SigU(dblocks,offblocks,diags,offdiags):
     - diagonal blocks are dblocks
     - lower off-diagonals are offblocks
 
-    Let U be an upper block-bidiagonal matrix whose 
+    Let U be an upper block-bidiagonal matrix whose
     - diagonals are given by diags
     - upper off-diagonals are given by offdiags
-    
+
     We would like to compute block-tridiagonal blocks of Sig @ U
     '''
 
@@ -389,7 +393,7 @@ def SigU(dblocks,offblocks,diags,offdiags):
         ],axis=0)
 
         upline = tf.matmul(dblocks[:-1],offdiags)+tf.matmul(offblocks,diags[1:],transpose_a=True)
-        
+
     else:
         mainline = tf.concat([
             [dblocks[0]@diags[0]],
@@ -399,18 +403,18 @@ def SigU(dblocks,offblocks,diags,offdiags):
         upline = tf.concat([
             tf.matmul(dblocks[:-1],offdiags[:-1])+tf.matmul(offblocks,diags[1:],transpose_a=True),
             [dblocks[-1]@offdiags[-1]]
-        ],axis=0) 
+        ],axis=0)
 
 
     return mainline,upline
 
 r'''
- _            _   _             
-| |_ ___  ___| |_(_)_ __   __ _ 
+ _            _   _
+| |_ ___  ___| |_(_)_ __   __ _
 | __/ _ \/ __| __| | '_ \ / _` |
 | ||  __/\__ \ |_| | | | | (_| |
  \__\___||___/\__|_|_| |_|\__, |
-                          |___/ 
+                          |___/
 
 '''
 
@@ -431,7 +435,7 @@ def recursive_eo(n):
         guys1=np.r_[0:n:2]
         guys2=np.r_[1:n:2]
         return np.concatenate([guys1,guys2[recursive_eo(len(guys2))]])
-    
+
 def perm2P(perm):
     import numpy as np
 
@@ -443,10 +447,10 @@ def perm2P(perm):
 
 def make_U(diags,offdiags):
     '''
-    Let U be an upper bidiagonal matrix whose 
+    Let U be an upper bidiagonal matrix whose
     - diagonals are given by diags
     - upper off-diagonals are given by offdiags
-    
+
     We return U
     '''
     import numpy as np
@@ -455,7 +459,7 @@ def make_U(diags,offdiags):
     n=diags.shape[0]
     m=offdiags.shape[0]
     k=diags.shape[1]
-    
+
     if n==m:
         V=np.zeros((n,k,n+1,k))
         for i in range(n):
@@ -555,7 +559,7 @@ def maintest():
             # the slow analysis
             Tm=np.kron(perm2P(recursive_eo(nchain)),np.eye(nblock))
             L=np.linalg.cholesky(Tm@J.reshape(sh2)@Tm.T)
-            
+
             # the fast analysis
             Rs=np.array([J[i,:,i] for i in range(nchain)])
             Os=np.array([J[i,:,i-1] for i in range(1,nchain)])
@@ -568,13 +572,13 @@ def maintest():
             mahal2=np.mean(np.concatenate(halfsolve(decomp,v))**2)
             assert np.allclose(mahal,mahal2)
             assert np.allclose(np.linalg.solve(L,Tm@v.ravel()),np.concatenate(halfsolve(decomp,v)).ravel())
-            
+
             # check determinant
             diags= np.concatenate([[np.diag(x) for x in y] for y in Ds])
             det1=2*np.sum(np.log(diags))
             det2=np.linalg.slogdet(J.reshape(sh2))[1]
             assert np.allclose(det1,det2)
-            
+
             # check backhalfsolve
             vrep=[npr.randn(x,nblock) for x in (np.array(ms)+1)//2]
             v=np.concatenate(vrep)
