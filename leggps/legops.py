@@ -2,6 +2,8 @@ import tensorflow as tf
 from . import constructions
 from . import cr
 import numpy as np
+import dataclasses
+import functools
 
 def leg_log_likelihood_tensorflow(ts,x,idxs,N,R,B,Lambda):
     '''
@@ -10,7 +12,7 @@ def leg_log_likelihood_tensorflow(ts,x,idxs,N,R,B,Lambda):
     - x: nobs x n, representing X(ts[idxs[0]]),X(ts[idxs[1]]),X(ts[idxs[2]])...
     - idxs: nobs x n
     - N: ell x ell
-    - H: ell x ell 
+    - R: ell x ell
     - B: n x ell
     - Lambda: ell x ell
 
@@ -21,26 +23,56 @@ def leg_log_likelihood_tensorflow(ts,x,idxs,N,R,B,Lambda):
            X2 = x[2],
            ...
         )
-        under the model 
+        under the model
           Z~PEGGP(N,R)
           Xi ~ N(B Z(ts[idxs[i]), Lambda Lambda^T)
     '''
 
-    # construct the prior
-    dblocks,offblocks = constructions.PEGSigi_irregular(ts,N,R)
+    distrinfo = txigbs2distrs(
+        ts,x,idxs,
+        constructions.calc_G(N,R),B,constructions.calc_LambdaLambdat(Lambda)
+    )
+    return distrinfo.log_likelihood()
 
-    # get the likelihood 
-    return log_leg_likelihood_fromblocks_irregular(
-        x,idxs,dblocks,offblocks,B,Lambda)
+def preprocess_numpy(ts,x,N,R,B,Lambda):
+    ts = tf.convert_to_tensor(ts,dtype=tf.float64)
+    x = tf.convert_to_tensor(x,dtype=tf.float64)
+    N = tf.convert_to_tensor(N,dtype=tf.float64)
+    R = tf.convert_to_tensor(R,dtype=tf.float64)
+    B = tf.convert_to_tensor(B,dtype=tf.float64)
+    Lambda = tf.convert_to_tensor(Lambda,dtype=tf.float64)
+
+    # check sizes
+    assert len(ts.shape)==1
+    assert len(x.shape)==2
+    assert len(N.shape)==2
+    assert len(R.shape)==2
+    assert len(B.shape)==2
+    assert len(Lambda.shape)==2
+    m=ts.shape[0]
+    assert x.shape[0]==m
+    n=x.shape[1]
+    assert B.shape[0]==n
+    ell = N.shape[0]
+    assert N.shape[1]==ell
+    assert R.shape[0]==ell
+    assert R.shape[1]==ell
+    assert Lambda.shape[0]==n
+    assert Lambda.shape[1]==n
+
+    # get info
+    ts2,idxs=constructions.dedup_ts(ts)
+    G=constructions.calc_G(N,R)
+    Sig=constructions.calc_LambdaLambdat(Lambda)
+    return ts2,x,idxs,G,B,Sig
 
 def leg_log_likelihood(ts,x,N,R,B,Lambda):
     '''
     Input:
     - ts: list of times
     - x: nobs x n, representing X(ts[0]),X(ts[1]),X(ts[2])...
-    - idxs: nobs x n
     - N: ell x ell
-    - H: ell x ell 
+    - H: ell x ell
     - B: n x ell
     - Lambda: ell x ell
 
@@ -51,48 +83,14 @@ def leg_log_likelihood(ts,x,N,R,B,Lambda):
            X2 = x[2],
            ...
         )
-        under the model 
+        under the model
           Z~PEGGP(N,R)
           Xi ~ N(B Z(ts[idxs[i]), Lambda Lambda^T)
     '''
 
-    ts2,idxs=constructions.dedup_ts(ts)
-
-    # construct the prior
-    dblocks,offblocks = constructions.PEGSigi_irregular(ts2,N,R)
-
-    # get the likelihood 
-    return log_leg_likelihood_fromblocks_irregular(
-        x,idxs,dblocks,offblocks,B,Lambda).numpy()
-
-
-def insample_posterior_irregular(ts,x,N,R,B,Lambda):
-    '''
-    Input:
-    - delta: scalar
-    - x: nchain x n, representing X(ts[0]),X(ts[1]),X(ts[2])...
-    - N: ell x ell
-    - H: ell x ell 
-    - B: n x ell
-    - Lambda: ell x ell
-
-    Output:
-    - mean:  E[Z(delta*i) |X] for each i
-    - variance: Cov(Z(delta*i) |X) for each i
-    - covariance: Cov(Z(delta*i),Z(delta*(i+1)) |X) for each i
-
-    under the model (Z,X)~LEGGP(N,R,B,Lambda).
-    '''
-
-    ts2,idxs=constructions.dedup_ts(ts)
-
-    # construct the prior precision
-    dblocks,offblocks = constructions.PEGSigi_irregular(ts2,N,R)
-
-    # get the posterior
-    mean,Sig_diag,Sig_off= insample_posterior_fromblocks_irregular(x,idxs,dblocks,offblocks,B,Lambda)
-
-    return mean,Sig_diag,Sig_off,ts2,idxs
+    ts,x,idxs,G,B,Sig = preprocess_numpy(ts,x,N,R,Lambda)
+    distrinfo = txigbs2distrs(ts,x,idxs,G,B,Sig)
+    return distrinfo.log_likelihood().numpy()
 
 def posterior_predictive(ts,x,targets,N,R,B,Lambda):
     '''
@@ -101,39 +99,39 @@ def posterior_predictive(ts,x,targets,N,R,B,Lambda):
     - x: nchain x n, representing X(ts[0]),X(ts[1]),X(ts[2])...
     - targets: a vector of times
     - N: ell x ell
-    - H: ell x ell 
+    - H: ell x ell
     - B: n x ell
     - Lambda: ell x ell
     - ts: a series of positions
 
-    Output: 
+    Output:
     - mean:  E[Y[i] |X] for each i
     - variance: Cov(Y[i]) |X) for each i
 
-    under the posterior predictive model
+    under the model
       Z~PEG(N,R)
       X[i]|Z ~ N(B Z(t[i]), Lambda Lambda^T)
-      Y[i] ~ N(BZ(targets[i]),Lambda Lambda^T)
+      Y[i] = BZ(targets[i])
     '''
+    ts,x,idxs,G,B,Sig = preprocess_numpy(ts,x,N,R,B,Lambda)
+    targets=tf.convert_to_tensor(targets,dtype=tf.float64)
+    assert len(targets.shape)==1
 
-    ts = tf.convert_to_tensor(ts,dtype=tf.float64)
-    targets = tf.convert_to_tensor(targets,dtype=tf.float64)
-    x = tf.convert_to_tensor(x,dtype=tf.float64)
-
-    mean,Sig_diag,Sig_off,ts2,idxs=insample_posterior_irregular(ts,x,N,R,B,Lambda)
-    means,variances=PEG_intercast(mean,Sig_diag,Sig_off,N,R,ts2,targets)
+    distrinfo = txigbs2distrs(ts,x,idxs,G,B,Sig)
+    mean,Sig_diag,Sig_off=distrinfo.insample_posterior()
+    means,variances=PEG_intercast(mean,Sig_diag,Sig_off,G,ts,targets)
     means2=tf.einsum('kl,il->ik',B,means)
-    variances2=tf.einsum('kl,ilm,nm -> ikn',B,variances,B) 
+    variances2=tf.einsum('kl,ilm,nm -> ikn',B,variances,B)
     return means2.numpy(),variances2.numpy()
-   
-def posterior(ts,x,targets,N,R,B,Lambda):
+
+def posterior(ts,x,idxs,targets,N,R,B,Lambda):
     '''
     Input:
     - ts, a set of times
     - x: nchain x n, representing X(ts[0]),X(ts[1]),X(ts[2])...
     - targets: a set of times
     - N: ell x ell
-    - H: ell x ell 
+    - H: ell x ell
     - B: n x ell
     - Lambda: ell x ell
 
@@ -146,39 +144,40 @@ def posterior(ts,x,targets,N,R,B,Lambda):
       Z~PEG(N,R)
       X[i]|Z ~ N(B Z(t[i]), Lambda Lambda^T)
     '''
-    ts = tf.convert_to_tensor(ts,dtype=tf.float64)
-    targets = tf.convert_to_tensor(targets,dtype=tf.float64)
-    x = tf.convert_to_tensor(x,dtype=tf.float64)
+    ts,x,idxs,G,Sig = preprocess_numpy(ts,x,N,R,B,Lambda)
+    targets=tf.convert_to_tensor(targets,dtype=tf.float64)
+    assert len(targets.shape)==1
 
-    mean,Sig_diag,Sig_off,ts2,idxs=insample_posterior_irregular(ts,x,N,R,B,Lambda)
-    means,variances=PEG_intercast(mean,Sig_diag,Sig_off,N,R,ts2,targets)
+    distrinfo = txigbs2distrs(ts,x,idxs,G,B,Sig)
+    mean,Sig_diag,Sig_off=distrinfo.insample_posterior()
+    means,variances=PEG_intercast(mean,Sig_diag,Sig_off,G,ts,targets)
     return means.numpy(),variances.numpy()
 
 
 r'''
- _          _                     
-| |__   ___| |_ __   ___ _ __ ___ 
+ _          _
+| |__   ___| |_ __   ___ _ __ ___
 | '_ \ / _ \ | '_ \ / _ \ '__/ __|
 | | | |  __/ | |_) |  __/ |  \__ \
 |_| |_|\___|_| .__/ \___|_|  |___/
-             |_|                  
+             |_|
 '''
 
 def gaussian_stitch(mean1,cov1,mean2,cov2):
     '''
     Input:
-    - mean1: ... x n 
-    - cov1:  ... x n x n 
+    - mean1: ... x n
+    - cov1:  ... x n x n
     - mean2: ... x m
-    - cov2:  ... x m x m 
+    - cov2:  ... x m x m
 
     with m<n
 
-    Output: 
+    Output:
       E_q[Y], cov_q(Y)
 
     where
-    
+
       q(x,y) = p2(x) p1(y|x)
       p1(x,y)=N(mean1,cov1)
       p2(x)=N(mean2,cov2)
@@ -197,7 +196,7 @@ def gaussian_stitch(mean1,cov1,mean2,cov2):
 
     # E_q[Y] = mean1 + mean_transformer @ mean2
     mean = mean1[...,SLY] + (mean_transformer@mean2[...,None])[...,0]
-    
+
     # Cov_p1[Y|X] = Var_p1(Y) - Cov_p1(Y,X) @ (Cov_p1(X,X))^-1 @ Cov_p1(X,Y)
     condcov = cov1[...,SLY,SLY] - tf.matmul(cov1[...,SLY,SLX],tf.linalg.solve(cov1[...,SLX,SLX],cov1[...,SLX,SLY]))
 
@@ -327,7 +326,7 @@ def blockup9(a,b,c,d,e,f,g,h,i):
 def allclose(x,y,eps=1e-10):
     return tf.reduce_all(tf.abs(x-y)<eps)
 
-def PEG_intercast(mean,Sig_diag,Sig_off,N,R,ots,ts,thresh=1e-10):
+def PEG_intercast(mean,Sig_diag,Sig_off,G,ots,ts,thresh=1e-10):
     '''
     interpolation and forecasting for PEGGPs
 
@@ -335,26 +334,24 @@ def PEG_intercast(mean,Sig_diag,Sig_off,N,R,ots,ts,thresh=1e-10):
     - mean:        nchain x n
     - Sig_diag:    nchain x n x n
     - Sig_off:     nchain-1 x n x n
-    - N:           n x n
-    - H:           n x n
+    - G:           n x n
     - ots:         nchain  -- an ordered vector of times
     - ts:          m -- a vector of times
 
-    Output: 
+    Output:
     - mean:  E_q[Z(ts[i])] for each i
     - variance: Cov_q(Z(ts[i]) for each i
 
     under the model
         Y=Z(ots[0]),Z(ots[1]),Z(ots[2])...
         q(Y,Z) = p2(Y) p1(Z|Y)
-        p2(Y) is a Markov process with 
+        p2(Y) is a Markov process with
             - Y[i] ~ N(mean[i],Sig_diag[i])
             - Cov(Y[i],Y[i+1]) = Sig_off[i]
-        p1(Z) = PEGGP(Z;N,R)
+        p1(Z) = PEGGP(Z;G)
     '''
 
     # collect stuff we'll need
-    G = constructions.calc_G(N,R)
     Gval,Gvec=tf.linalg.eig(G)
     Gveci = tf.linalg.inv(Gvec)
     blocksize=Sig_diag.shape[1]
@@ -403,99 +400,72 @@ def PEG_intercast(mean,Sig_diag,Sig_off,N,R,ots,ts,thresh=1e-10):
         means.append(m)
         variances.append(v)
 
-
     return tf.stack(means,axis=0),tf.stack(variances,axis=0)
 
-def insample_posterior_fromblocks_irregular(x,idxs,dblocks,offblocks,B,Lambda):
+@dataclasses.dataclass
+class DistrInfo:
+    '''
+    Collates some useful information about a model of the form
+
+    Z ~ PEG(G)
+    X[i] ~ N(B[i] Z[ts[idxs[i]],Sig[i])
+
+    after observing X
+    '''
+
+    xs:           'observation values'
+    J_dblocks:    'prior precision diagonal blocks'
+    J_offblocks:  'prior precision offdiagonal blocks'
+    JT_dblocks:   'posterior precision diagonal blocks'
+    JT_offblocks: 'posterior precision off-diagonal blocks'
+    JT_offset:    'posterior offset'
+    Sig:          'Sig'
+    Sigix:        'Sig multiplied by x'
+
+    def insample_posterior(self):
+        JT_decomp=cr.decompose(self.JT_dblocks,self.JT_offblocks)
+        posterior_mean=cr.solve(JT_decomp,self.JT_offset)
+        cov_dblocks,cov_offblocks=cr.inverse_blocks(JT_decomp)
+        return posterior_mean,cov_dblocks,cov_offblocks
+
+    def log_likelihood(self):
+        # get marginal likelihood of x from prior and posterior distribution info
+        J_decomp= cr.decompose(self.J_dblocks,self.J_offblocks)
+        Jdet = cr.det(J_decomp)
+        postmahal,JTdet = cr.mahal_and_det(self.JT_dblocks,self.JT_offblocks,self.JT_offset)
+        ldets = tf.reduce_mean(tf.linalg.slogdet((2*np.pi)*self.Sig)[1])*tf.cast(self.xs.shape[0],tf.float64)
+        fwdmahal = tf.reduce_sum(self.Sigix*self.xs)
+        return .5*(Jdet-JTdet - ldets - fwdmahal +postmahal)
+
+def txigbs2distrs(ts,xs,idxs,G,B,Sig):
     '''
     Input:
-    - x: nobs x n
-    - idxs: nobs
-    - dblocks,offblocks denote the sparse representation of the inverse
-      covariance of Z(t1),Z(t2),...Z(tm) when Z~PEGGP(N,R) for some (N,R).
-    - B, Lambda: matrices
+    - ts   -- m'         -- observations are at ts
+    - xs   -- m x n      -- observations
+    - idxs -- m          -- xs[i] is observed at ts[idxs[i]]
+    - G    -- ell x ell  -- peg generator
+    - Bs   -- n x ell
+    - Sig -- n x n
 
-    Output:
-    - mean:  E[Z(ti) |X] for each i
-    - variance: Cov(Z(ti) |X) for each i
-
-    under the model
-          Z~PEGGP(N,R)
-          Xi ~ N(B Z(ts[idxs[i]), Lambda Lambda^T)
+    Output: a DistrInfo object
     '''
 
-    LLt = constructions.calc_LambdaLambdat(Lambda)
+    nobs=xs.shape[0]
+    nchain=ts.shape[0]
+    n=B.shape[0]
+    ell=B.shape[1]
 
-    nobs,m=x.shape
-    nchain=dblocks.shape[0]
+    # get Jd
+    J_dblocks,J_offblocks = constructions.exponentiate_generator(ts,G)
 
-    BtLambdaiB = tf.transpose(B)@tf.linalg.solve(LLt,B)
-    Lambdaix = tf.transpose(tf.linalg.solve(LLt,tf.transpose(x))) # nchain x m
-    Lambdaix_sumup = tf.scatter_nd(idxs[:,None],Lambdaix,(nchain,m))
-    weights=tf.scatter_nd(idxs[:,None],tf.ones(nobs,dtype=dblocks.dtype),(nchain,))
-    posterior_precision_dblocks = dblocks + BtLambdaiB[None]*weights[:,None,None]
-    posterior_offset = tf.transpose(tf.transpose(B)@tf.transpose(Lambdaix_sumup))
-    posterior_decomp = cr.decompose(posterior_precision_dblocks,offblocks)
+    # get JT
+    Sigix = tf.transpose(tf.linalg.solve(Sig,tf.transpose(xs))) # <-- m x n
+    Sigib = tf.linalg.solve(Sig,B) # <-- n x ell
+    offset_adder = tf.einsum('nl,mn->ml',B,Sigix) # <-- m x ell
+    JT_offset = tf.scatter_nd(idxs[:,None],offset_adder,shape=(ts.shape[0],G.shape[0])) # m' x ell
+    prec_adder = tf.einsum('nk,nl->kl',B,Sigib)# <-- ell x ell
+    weights=tf.scatter_nd(idxs[:,None],tf.ones(nobs,dtype=J_dblocks.dtype),(nchain,))
+    JT_offblocks = J_offblocks
+    JT_dblocks = J_dblocks + prec_adder[None,:,:]*weights[:,None,None]
 
-    mean = cr.solve(posterior_decomp,posterior_offset)
-    Sig_diag,Sig_off = cr.inverse_blocks(posterior_decomp)
-
-    return mean,Sig_diag,Sig_off
-
-def log_leg_likelihood_fromblocks_irregular(x,idxs,dblocks,offblocks,B,Lambda):
-    '''
-    Input:
-    - x: nobs x n
-    - idxs: nobs x n
-    - dblocks,offblocks denote the sparse representation of the inverse
-      covariance of Z(ts[0]),Z(ts[1]),... when Z~PEGGP(N,R) for some (N,R).
-    - B, Lambda: matrices
-
-    Output: the marginal log likelihood
-        log p(
-           X0 = x[0],
-           X1 = x[1],
-           X2 = x[2],
-           ...
-        )
-        under the model 
-          Z~PEGGP(N,R)
-          Xi ~ N(B Z(ts[idxs[i]), Lambda Lambda^T)
-    '''
-    nobs=x.shape[0]
-    nchain,n,n=dblocks.shape
-    m=B.shape[0]
-
-    LLt = constructions.calc_LambdaLambdat(Lambda)
-
-    ############## MAHAL ################
-    # MAHAL PART I,   <x | (LLt)^-1 | x>
-    Lambdaix = tf.transpose(tf.linalg.solve(LLt,tf.transpose(x))) # nchain x m
-    mahal1 = tf.reduce_sum(x*Lambdaix)
-
-    # MAHAL PART II,  <B^T LLt^-1 x | (J + B^T LLt^-1 B)^-1 | B^T LLt^-1 x >
-    weights=tf.scatter_nd(idxs[:,None],tf.ones(nobs,dtype=dblocks.dtype),(nchain,))
-    BtLambdaiB = tf.transpose(B)@tf.linalg.solve(LLt,B)
-    dblocks2 = dblocks + BtLambdaiB[None]*weights[:,None,None]
-
-    Lambdaix_sumup = tf.scatter_nd(idxs[:,None],Lambdaix,(nchain,m))
-    BTLambdaix = tf.transpose(tf.transpose(B)@tf.transpose(Lambdaix_sumup))
-    post_decomp = cr.decompose(dblocks2,offblocks)
-    mahal2 = cr.mahal(post_decomp,BTLambdaix)
-
-    # COLLECT
-    mahal = -.5*(mahal1 - mahal2)
-
-    ############## DET ################
-
-    ldet = nobs*tf.linalg.slogdet(LLt)[1]
-    prior_decomp= cr.decompose(dblocks,offblocks)
-    sigdet = -cr.det(prior_decomp)
-    postdet = cr.det(post_decomp)
-    twopidet = np.log(2*np.pi)*nchain*m
-
-    det = -.5*(ldet + sigdet + postdet+twopidet)
-
-    ############ collect ###########
-
-    return mahal+det
+    return DistrInfo(xs,J_dblocks,J_offblocks,JT_dblocks,JT_offblocks,JT_offset,Sig,Sigix)
